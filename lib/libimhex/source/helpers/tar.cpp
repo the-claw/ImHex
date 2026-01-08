@@ -5,7 +5,9 @@
 
 #include <wolv/io/file.hpp>
 
+extern "C" {
 #include <microtar.h>
+}
 
 namespace hex {
 
