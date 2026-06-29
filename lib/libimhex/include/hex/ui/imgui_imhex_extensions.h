@@ -134,8 +134,8 @@ namespace ImGuiExt {
     bool IconHyperlink(const char *icon, const char *label, const ImVec2 &size_arg = ImVec2(0, 0), ImGuiButtonFlags flags = 0);
     bool Hyperlink(const char *label, const ImVec2 &size_arg = ImVec2(0, 0), ImGuiButtonFlags flags = 0);
     bool BulletHyperlink(const char *label, const ImVec2 &size_arg = ImVec2(0, 0), ImGuiButtonFlags flags = 0);
-    bool DescriptionButton(const char *label, const char *description, const ImVec2 &size_arg = ImVec2(0, 0), ImGuiButtonFlags flags = 0);
-    bool DescriptionButtonProgress(const char *label, const char *description, float fraction, const ImVec2 &size_arg = ImVec2(0, 0), ImGuiButtonFlags flags = 0);
+    bool DescriptionButton(const char *label, const char *description, const char *icon, const ImVec2 &size_arg = ImVec2(0, 0), ImGuiButtonFlags flags = 0);
+    bool DescriptionButtonProgress(const char *label, const char *description, const char *icon, float fraction, const ImVec2 &size_arg = ImVec2(0, 0), ImGuiButtonFlags flags = 0);
 
     void HelpHover(const char *text, const char *icon = "(?)", ImU32 iconColor = ImGui::GetColorU32(ImGuiCol_ButtonActive));
 
@@ -319,6 +319,7 @@ namespace ImGuiExt {
     bool DimmedButtonToggle(const char *icon, bool *v, ImVec2 size = ImVec2(0, 0), ImVec2 iconOffset = ImVec2(0, 0));
     bool DimmedIconToggle(const char *icon, bool *v);
     bool DimmedIconToggle(const char *iconOn, const char *iconOff, bool *v);
+    bool DimmedArrowButton(const char *id, ImGuiDir dir, ImVec2 size = ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight()));
 
     void TextOverlay(const char *text, ImVec2 pos, float maxWidth = -1);
 

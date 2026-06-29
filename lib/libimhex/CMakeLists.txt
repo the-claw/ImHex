@@ -42,6 +42,7 @@ set(LIBIMHEX_SOURCES
         source/helpers/keys.cpp
         source/helpers/udp_server.cpp
         source/helpers/scaling.cpp
+        source/helpers/binary_pattern.cpp
 
         source/test/tests.cpp
 
@@ -55,6 +56,9 @@ set(LIBIMHEX_SOURCES
         source/ui/popup.cpp
         source/ui/toast.cpp
         source/ui/banner.cpp
+
+        source/mcp/client.cpp
+        source/mcp/server.cpp
 
         source/subcommands/subcommands.cpp
 )

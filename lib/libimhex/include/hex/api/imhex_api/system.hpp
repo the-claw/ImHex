@@ -62,6 +62,7 @@ EXPORT_MODULE namespace hex {
             void setMainWindowSize(u32 width, u32 height);
             void setMainDockSpaceId(ImGuiID id);
             void setMainWindowHandle(GLFWwindow *window);
+            void setMainWindowFocusState(bool focused);
 
             void setGlobalScale(float scale);
             void setNativeScale(float scale);
@@ -162,6 +163,12 @@ EXPORT_MODULE namespace hex {
         GLFWwindow* getMainWindowHandle();
 
         /**
+         * @brief Checks if the main window is currently focused
+         * @return Whether the main window is focused
+         */
+        bool isMainWindowFocused();
+
+        /**
          * @brief Checks if borderless window mode is enabled currently
          * @return Whether borderless window mode is enabled
          */
@@ -171,7 +178,7 @@ EXPORT_MODULE namespace hex {
          * @brief Checks if multi-window mode is enabled currently
          * @return Whether multi-window mode is enabled
          */
-        bool isMutliWindowModeEnabled();
+        bool isMultiWindowModeEnabled();
 
         /**
          * @brief Gets the init arguments passed to ImHex from the splash screen

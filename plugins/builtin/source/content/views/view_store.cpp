@@ -255,7 +255,7 @@ namespace hex::plugin::builtin {
                         if (entry.contains("name") && entry.contains("desc") && entry.contains("authors") && entry.contains("file") && entry.contains("url") && entry.contains("hash") && entry.contains("folder")) {
 
                             // Parse entry
-                            StoreEntry storeEntry = { entry["name"], entry["desc"], entry["authors"], entry["file"], entry["url"], entry["hash"], entry["folder"], false, false, false, false };
+                            StoreEntry storeEntry = { entry["name"], entry["desc"], entry["authors"], entry["file"], HttpRequest::curlify(entry["url"]), entry["hash"], entry["folder"], false, false, false, false };
 
                             updateEntryMetadata(storeEntry, category);
                             category.entries.push_back(storeEntry);
@@ -399,6 +399,10 @@ namespace hex::plugin::builtin {
         }
 
         m_download = {};
+    }
+
+    void ViewStore::drawHelpText() {
+        ImGuiExt::TextFormattedWrapped("This view lets you download and update additional content for ImHex, such as pattern files, magic files, themes and more. All content is provided by the ImHex community and can be freely used within ImHex.");
     }
 
 }

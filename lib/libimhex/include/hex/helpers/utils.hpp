@@ -28,6 +28,8 @@
 
 #include <imgui.h>
 
+#include <wolv/utils/charconv.hpp>
+
 namespace hex {
 
     #if !defined(HEX_MODULE_EXPORT)
@@ -96,6 +98,8 @@ namespace hex {
 
     void startProgram(const std::vector<std::string> &command);
     int executeCommand(const std::string &command);
+    std::optional<std::string> executeCommandWithOutput(const std::string &command);
+    void executeCommandDetach(const std::string &command);
     void openWebpage(std::string url);
 
     extern "C" void registerFont(const char *fontName, const char *fontPath);
@@ -261,7 +265,11 @@ namespace hex {
             if (!std::isxdigit(byteString[i]) || !std::isxdigit(byteString[i + 1]))
                 return {};
 
-            result.push_back(std::strtoul(byteString.substr(i, 2).c_str(), nullptr, 16));
+            auto value = wolv::util::from_chars<u64>(byteString.substr(i, 2), 16);
+            if (!value.has_value())
+                return {};
+
+            result.push_back(*value);
         }
 
         return result;
@@ -362,7 +370,7 @@ namespace hex {
 
     [[nodiscard]] std::optional<std::string> getEnvironmentVariable(const std::string &env);
 
-    [[nodiscard]] std::string limitStringLength(const std::string &string, size_t maxLength);
+    [[nodiscard]] std::string limitStringLength(const std::string &string, size_t maxLength, bool fromBothEnds = true);
 
     [[nodiscard]] std::optional<std::fs::path> getInitialFilePath();
 

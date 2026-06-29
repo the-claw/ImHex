@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <hex.hpp>
 
 #include <hex/api/workspace_manager.hpp>
@@ -51,18 +52,20 @@ namespace hex::plugin::builtin {
 
         std::string s_tipOfTheDay;
 
-        bool s_simplifiedWelcomeScreen = false;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.interface", "hex.builtin.setting.interface.simplified_welcome_screen"> s_simplifiedWelcomeScreen = false;
 
         class PopupRestoreBackup : public Popup<PopupRestoreBackup> {
         private:
             std::fs::path m_logFilePath;
+            bool m_hasAutoBackups;
             std::function<void()> m_restoreCallback;
             std::function<void()> m_deleteCallback;
             bool m_reportError = true;
         public:
-            PopupRestoreBackup(std::fs::path logFilePath, const std::function<void()> &restoreCallback, const std::function<void()> &deleteCallback)
+            PopupRestoreBackup(std::fs::path logFilePath, bool hasAutoBackups, const std::function<void()> &restoreCallback, const std::function<void()> &deleteCallback)
                     : Popup("hex.builtin.popup.safety_backup.title"),
                     m_logFilePath(std::move(logFilePath)),
+                    m_hasAutoBackups(hasAutoBackups),
                     m_restoreCallback(restoreCallback),
                     m_deleteCallback(deleteCallback) {
 
@@ -123,6 +126,12 @@ namespace hex::plugin::builtin {
 
                     this->close();
                 }
+
+                if (m_hasAutoBackups) {
+                    if (ImGui::Button("hex.builtin.popup.safety_backup.show_auto_backups"_lang, ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+                        recent::PopupAutoBackups::open();
+                    }
+                }
             }
         };
 
@@ -154,7 +163,7 @@ namespace hex::plugin::builtin {
 
         bool isAnyViewOpen() {
             const auto &views = ContentRegistry::Views::impl::getEntries();
-            return std::any_of(views.begin(), views.end(),
+            return std::ranges::any_of(views,
                 [](const auto &entry) {
                     return entry.second->getWindowOpenState();
                 });
@@ -246,7 +255,7 @@ namespace hex::plugin::builtin {
                     if (colTile.has_value() && nextSegment != *colTile) {
                         segments.pop_back();
                     } else {
-                        colTile = { i32(rng() % u32(tileCount.x)), i32(rng() % u32(tileCount.x)) };
+                        colTile = { .x=i32(rng() % u32(tileCount.x)), .y=i32(rng() % u32(tileCount.x)) };
                     }
                 } else {
                     overCounter -= 1;
@@ -338,10 +347,10 @@ namespace hex::plugin::builtin {
                         if (ImGuiExt::BeginSubWindow("hex.builtin.welcome.header.start"_lang, nullptr, ImVec2(), ImGuiChildFlags_AutoResizeX)) {
                             if (ImGuiExt::IconHyperlink(ICON_VS_NEW_FILE, "hex.builtin.welcome.start.create_file"_lang)) {
                                 auto newProvider = hex::ImHexApi::Provider::createProvider("hex.builtin.provider.mem_file", true);
-                                if (newProvider != nullptr && !newProvider->open())
-                                    hex::ImHexApi::Provider::remove(newProvider);
+                                if (newProvider != nullptr && newProvider->open().isFailure())
+                                    hex::ImHexApi::Provider::remove(newProvider.get());
                                 else
-                                    EventProviderOpened::post(newProvider);
+                                    EventProviderOpened::post(newProvider.get());
                             }
                             if (ImGuiExt::IconHyperlink(ICON_VS_GO_TO_FILE, "hex.builtin.welcome.start.open_file"_lang))
                                 RequestOpenWindow::post("Open File");
@@ -406,7 +415,7 @@ namespace hex::plugin::builtin {
                     auto windowPadding = ImGui::GetStyle().WindowPadding.x * 3;
 
                     if (ImGuiExt::BeginSubWindow("hex.builtin.welcome.header.customize"_lang, nullptr, ImVec2(ImGui::GetContentRegionAvail().x - windowPadding, 0), ImGuiChildFlags_AutoResizeX)) {
-                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.customize.settings.title"_lang, "hex.builtin.welcome.customize.settings.desc"_lang, ImVec2(ImGui::GetContentRegionAvail().x, 0)))
+                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.customize.settings.title"_lang, "hex.builtin.welcome.customize.settings.desc"_lang, ICON_VS_SETTINGS_GEAR, ImVec2(ImGui::GetContentRegionAvail().x, 0)))
                             RequestOpenWindow::post("Settings");
                     }
                     ImGuiExt::EndSubWindow();
@@ -416,24 +425,24 @@ namespace hex::plugin::builtin {
 
                     if (ImGuiExt::BeginSubWindow("hex.builtin.welcome.header.learn"_lang, nullptr, ImVec2(ImGui::GetContentRegionAvail().x - windowPadding, 0), ImGuiChildFlags_AutoResizeX)) {
                         const auto size = ImVec2(ImGui::GetContentRegionAvail().x, 0);
-                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.latest.title"_lang, "hex.builtin.welcome.learn.latest.desc"_lang, size))
+                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.latest.title"_lang, "hex.builtin.welcome.learn.latest.desc"_lang, ICON_VS_GITHUB, size))
                             hex::openWebpage("hex.builtin.welcome.learn.latest.link"_lang);
-                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.imhex.title"_lang, "hex.builtin.welcome.learn.imhex.desc"_lang, size)) {
+                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.imhex.title"_lang, "hex.builtin.welcome.learn.imhex.desc"_lang, ICON_VS_BOOK, size)) {
                             AchievementManager::unlockAchievement("hex.builtin.achievement.starting_out", "hex.builtin.achievement.starting_out.docs.name");
                             hex::openWebpage("hex.builtin.welcome.learn.imhex.link"_lang);
                         }
-                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.pattern.title"_lang, "hex.builtin.welcome.learn.pattern.desc"_lang, size))
+                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.pattern.title"_lang, "hex.builtin.welcome.learn.pattern.desc"_lang, ICON_VS_SYMBOL_NAMESPACE, size))
                             hex::openWebpage("hex.builtin.welcome.learn.pattern.link"_lang);
-                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.plugins.title"_lang, "hex.builtin.welcome.learn.plugins.desc"_lang, size))
+                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.plugins.title"_lang, "hex.builtin.welcome.learn.plugins.desc"_lang, ICON_VS_PLUG, size))
                             hex::openWebpage("hex.builtin.welcome.learn.plugins.link"_lang);
 
                         ImGui::SeparatorEx(ImGuiSeparatorFlags_Horizontal, 3_scaled);
 
-                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.interactive_tutorial.title"_lang, "hex.builtin.welcome.learn.interactive_tutorial.desc"_lang, size)) {
+                        if (ImGuiExt::DescriptionButton("hex.builtin.welcome.learn.interactive_tutorial.title"_lang, "hex.builtin.welcome.learn.interactive_tutorial.desc"_lang, ICON_VS_COMPASS, size)) {
                             RequestOpenWindow::post("Tutorials");
                         }
                         if (auto [unlocked, total] = AchievementManager::getProgress(); unlocked != total) {
-                            if (ImGuiExt::DescriptionButtonProgress("hex.builtin.welcome.learn.achievements.title"_lang, "hex.builtin.welcome.learn.achievements.desc"_lang, float(unlocked) / float(total), size)) {
+                            if (ImGuiExt::DescriptionButtonProgress("hex.builtin.welcome.learn.achievements.title"_lang, "hex.builtin.welcome.learn.achievements.desc"_lang, ICON_VS_SPARKLE, float(unlocked) / float(total), size)) {
                                 RequestOpenWindow::post("Achievements");
                             }
                         }
@@ -642,9 +651,7 @@ namespace hex::plugin::builtin {
                 }
             }
         });
-        ContentRegistry::Settings::onChange("hex.builtin.setting.interface", "hex.builtin.setting.interface.simplified_welcome_screen", [](const ContentRegistry::Settings::SettingsValue &value) {
-            s_simplifiedWelcomeScreen = value.get<bool>(false);
-        });
+
         ContentRegistry::Settings::onChange("hex.builtin.setting.interface", "hex.builtin.setting.interface.language", [](const ContentRegistry::Settings::SettingsValue &value) {
             auto language = value.get<std::string>("en-US");
             if (language != LocalizationManager::getSelectedLanguageId())
@@ -739,6 +746,10 @@ namespace hex::plugin::builtin {
                 auto backupFilePathOld = path / BackupFileName;
                 backupFilePathOld.replace_extension(".hexproj.old");
 
+                bool autoBackupsEnabled = ContentRegistry::Settings::read<int>("hex.builtin.setting.general", "hex.builtin.setting.general.backups.auto_backup_time", 0) > 0;
+                auto autoBackups = recent::PopupAutoBackups::getAutoBackups();
+                bool hasAutoBackups = autoBackupsEnabled && !autoBackups.empty();
+
                 bool hasBackupFile = wolv::io::fs::exists(backupFilePath);
 
                 if (!hasProject && !hasBackupFile) {
@@ -762,13 +773,16 @@ namespace hex::plugin::builtin {
                 PopupRestoreBackup::open(
                     // Path of log file
                     crashFileData.value("logFile", ""),
+                    hasAutoBackups,
 
                     // Restore callback
-                    [crashFileData, backupFilePath, hasProject, hasBackupFile] {
+                    [crashFileData, backupFilePath, hasProject, hasBackupFile, hasAutoBackups, autoBackups = std::move(autoBackups)] {
                         if (hasBackupFile) {
                             if (ProjectFile::load(backupFilePath)) {
                                 if (hasProject) {
                                     ProjectFile::setPath(crashFileData["project"].get<std::string>());
+                                } else if (hasAutoBackups) {
+                                    ProjectFile::setPath(autoBackups.front().path);
                                 } else {
                                     ProjectFile::setPath("");
                                 }
@@ -779,6 +793,8 @@ namespace hex::plugin::builtin {
                         } else {
                             if (hasProject) {
                                 ProjectFile::setPath(crashFileData["project"].get<std::string>());
+                            } else if (hasAutoBackups) {
+                                ProjectFile::setPath(autoBackups.front().path);
                             }
                         }
                     },
@@ -802,7 +818,7 @@ namespace hex::plugin::builtin {
             std::mt19937 random(daysSinceEpoch.count());
 
             auto chosenCategory = tipsCategories[random()%tipsCategories.size()].at("tips");
-            auto chosenTip = chosenCategory[random()%chosenCategory.size()];
+            const auto& chosenTip = chosenCategory[random()%chosenCategory.size()];
             s_tipOfTheDay = chosenTip.get<std::string>();
 
             bool showTipOfTheDay = ContentRegistry::Settings::read<bool>("hex.builtin.setting.general", "hex.builtin.setting.general.show_tips", false);

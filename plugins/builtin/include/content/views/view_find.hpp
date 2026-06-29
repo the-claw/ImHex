@@ -27,6 +27,8 @@ namespace hex::plugin::builtin {
             return ContentRegistry::Views::getViewByName("hex.builtin.view.hex_editor.name");
         }
 
+        void drawHelpText() override;
+
     private:
 
         using Occurrence = hex::ContentRegistry::DataFormatter::impl::FindOccurrence;
@@ -44,7 +46,8 @@ namespace hex::plugin::builtin {
                 Sequence,
                 Regex,
                 BinaryPattern,
-                Value
+                Value,
+                Constants
             } mode = Mode::Strings;
 
             enum class StringType : int { ASCII = 0, UTF8 = 1, UTF16LE = 2, UTF16BE = 3, ASCII_UTF16LE = 4, ASCII_UTF16BE = 5 };
@@ -98,6 +101,10 @@ namespace hex::plugin::builtin {
                 } type = Type::U8;
             } value;
 
+            struct Constants {
+                u32 alignment = 1;
+            } constants;
+
         } m_searchSettings, m_decodeSettings;
 
         using OccurrenceTree = wolv::container::IntervalTree<Occurrence>;
@@ -118,6 +125,7 @@ namespace hex::plugin::builtin {
         static std::vector<Occurrence> searchRegex(Task &task, prv::Provider *provider, Region searchRegion, const SearchSettings::Regex &settings);
         static std::vector<Occurrence> searchBinaryPattern(Task &task, prv::Provider *provider, Region searchRegion, const SearchSettings::BinaryPattern &settings);
         static std::vector<Occurrence> searchValue(Task &task, prv::Provider *provider, Region searchRegion, const SearchSettings::Value &settings);
+        static std::vector<Occurrence> searchConstants(Task &task, prv::Provider *provider, Region searchRegion, const SearchSettings::Constants &settings);
 
         void drawContextMenu(Occurrence &target, const std::string &value);
 

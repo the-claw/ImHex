@@ -25,8 +25,6 @@
 #include <hex/ui/banner.hpp>
 
 #include <cmath>
-#include <chrono>
-#include <csignal>
 #include <numbers>
 
 #include <romfs/romfs.hpp>
@@ -54,12 +52,9 @@
 #include <hex/ui/toast.hpp>
 #include <wolv/utils/guards.hpp>
 #include <fmt/printf.h>
-#include <fmt/chrono.h>
 #include <hex/helpers/opengl.hpp>
 
 namespace hex {
-
-    using namespace std::literals::chrono_literals;
 
     Window::Window() {
         this->initGLFW();
@@ -67,10 +62,6 @@ namespace hex {
         this->setupNativeWindow();
         this->registerEventHandlers();
         this->setupEmergencyPopups();
-
-        #if !defined(OS_WEB)
-
-        #endif
     }
 
     Window::~Window() {
@@ -119,7 +110,7 @@ namespace hex {
 
         LayoutManager::registerLoadCallback([this](std::string_view line) {
             int width = 0, height = 0;
-            sscanf(line.data(), "MainWindowSize=%d,%d", &width, &height);
+            sscanf(std::string(line).data(), "MainWindowSize=%d,%d", &width, &height);
 
             if (width > 0 && height > 0) {
                 TaskManager::doLater([width, height, this]{
@@ -232,6 +223,8 @@ namespace hex {
     }
 
     void Window::loop() {
+        using namespace std::literals::chrono_literals;
+
         glfwShowWindow(m_window);
 
         double returnToIdleTime = 5.0;
@@ -416,8 +409,6 @@ namespace hex {
         // Run all deferred calls
         TaskManager::runDeferredCalls();
 
-        TutorialManager::drawTutorial();
-
         EventFrameBegin::post();
 
         // Handle all undocked floating windows
@@ -429,7 +420,7 @@ namespace hex {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 
-        ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+        ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
         if (!m_emergencyPopupOpen)
             windowFlags |= ImGuiWindowFlags_MenuBar;
@@ -621,6 +612,8 @@ namespace hex {
             }
         }
 
+        TutorialManager::drawTutorial();
+
         // Draw Toasts
         {
             u32 index = 0;
@@ -668,9 +661,9 @@ namespace hex {
 
             const auto windowPos = ImHexApi::System::getMainWindowPosition();
             float startY = windowPos.y + ImGui::GetTextLineHeight() + ((ImGui::GetTextLineHeight() + (ImGui::GetStyle().FramePadding.y * 2.0F)) * (onWelcomeScreen ? 1 : 2));
-            const auto height = ImGui::GetTextLineHeightWithSpacing() * 1.5f;
+            const auto height = ImGui::GetTextLineHeightWithSpacing() * 1.5F;
 
-            // Offset banner based on the size of the title bar. On macOS it's slightly taller
+            // Offset banner based on the size of the title bar. On macOS, it's slightly taller
             #if defined(OS_MACOS)
                 startY += 2 * 8_scaled;
             #else
@@ -914,7 +907,7 @@ namespace hex {
         auto* drawData = ImGui::GetDrawData();
 
         // Avoid accidentally clearing the viewport when the application is minimized,
-        // otherwise the OS will display an empty frame during deminimization on macOS
+        // otherwise the OS will display an empty frame during window restore on macOS
         if (drawData->DisplaySize.x != 0 && drawData->DisplaySize.y != 0) {
             int displayWidth, displayHeight;
             glfwGetFramebufferSize(m_window, &displayWidth, &displayHeight);
@@ -959,26 +952,26 @@ namespace hex {
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
             GLuint quadVAO, quadVBO;
-            float quadVertices[] = {
+            constexpr static std::array QuadVertices = {
                 // positions   // texCoords
-                -1.0f,  1.0f,  0.0f, 1.0f,
-                -1.0f, -1.0f,  0.0f, 0.0f,
-                 1.0f, -1.0f,  1.0f, 0.0f,
+                -1.0F,  1.0F,  0.0F, 1.0F,
+                -1.0F, -1.0F,  0.0F, 0.0F,
+                 1.0F, -1.0F,  1.0F, 0.0F,
 
-                -1.0f,  1.0f,  0.0f, 1.0f,
-                 1.0f, -1.0f,  1.0f, 0.0f,
-                 1.0f,  1.0f,  1.0f, 1.0f
+                -1.0F,  1.0F,  0.0F, 1.0F,
+                 1.0F, -1.0F,  1.0F, 0.0F,
+                 1.0F,  1.0F,  1.0F, 1.0F
             };
 
             glGenVertexArrays(1, &quadVAO);
             glGenBuffers(1, &quadVBO);
             glBindVertexArray(quadVAO);
             glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(QuadVertices), QuadVertices.data(), GL_STATIC_DRAW);
             glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
             glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), reinterpret_cast<void *>(2 * sizeof(float)));
             glBindVertexArray(0);
 
             m_postProcessingShader.bind();
@@ -1018,7 +1011,7 @@ namespace hex {
 
             try {
                 log::error("GLFW Error [0x{:05X}] : {}", error, desc);
-            } catch (const std::system_error &) {
+            } catch (const std::system_error &) { //NOLINT(bugprone-empty-catch): we can't log it
                 // Catch and ignore system error that might be thrown when too many errors are being logged to a file
             }
         });
@@ -1026,8 +1019,14 @@ namespace hex {
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_FLOATING, GLFW_FALSE);
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+
+        // Don't hide the window on the web build, otherwise the mouse cursor offset will not
+        // be calculated correctly if the canvas is not filling the entire screen
+        #if !defined(OS_WEB)
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        #endif
+
         configureGLFW();
 
         if (initialWindowProperties.has_value()) {
@@ -1047,9 +1046,31 @@ namespace hex {
             }
         }
 
+        float maxWindowCreationWidth = monitorWidth / 1_scaled;
+        float maxWindowCreationHeight = monitorHeight / 1_scaled;
+
+        // Wayland auto-maximizes windows that take up 80% or more of the monitor size
+        // Limit the size to take up slightly less than that at max
+        // glfwGetPlatform() is only available since GLFW 3.4
+        #if GLFW_VERSION_MAJOR > 4 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4)
+            if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+                const static auto SizeMultiplier = sqrt(0.79);
+                maxWindowCreationWidth  *= SizeMultiplier;
+                maxWindowCreationHeight *= SizeMultiplier;
+            }
+        #endif
+
+        maxWindowCreationWidth -= 50_scaled;
+        maxWindowCreationHeight -= 50_scaled;
+
         // Create window
         m_windowTitle = "ImHex";
-        m_window      = glfwCreateWindow(std::min(1280_scaled, monitorWidth - 50_scaled), std::min(720_scaled, monitorHeight - 50_scaled), m_windowTitle.c_str(), nullptr, nullptr);
+        m_window = glfwCreateWindow(
+            std::min(1280_scaled, maxWindowCreationWidth),
+            std::min(720_scaled, maxWindowCreationHeight),
+            m_windowTitle.c_str(),
+            nullptr, nullptr
+        );
 
         ImHexApi::System::impl::setMainWindowHandle(m_window);
 
@@ -1123,7 +1144,7 @@ namespace hex {
             win->m_waitEventsBlocked = true;
         };
 
-        static const auto isMainWindow = [](GLFWwindow *window) {
+        static const auto isMainWindow = [](const GLFWwindow *window) {
             return window == ImHexApi::System::getMainWindowHandle();
         };
 
@@ -1173,7 +1194,10 @@ namespace hex {
         glfwSetCursorPosCallback(m_window, unlockFrameRate);
         glfwSetMouseButtonCallback(m_window, unlockFrameRate);
         glfwSetScrollCallback(m_window, unlockFrameRate);
-        glfwSetWindowFocusCallback(m_window, unlockFrameRate);
+        glfwSetWindowFocusCallback(m_window, [](GLFWwindow *window, int focused) {
+            unlockFrameRate(window);
+            ImHexApi::System::impl::setMainWindowFocusState(focused);
+        });
 
         glfwSetWindowMaximizeCallback(m_window, [](GLFWwindow *window, int) {
             glfwShowWindow(window);
@@ -1285,7 +1309,7 @@ namespace hex {
         io.ConfigDragClickToInputText = true;
 
         if (glfwGetPrimaryMonitor() != nullptr) {
-            if (ImHexApi::System::isMutliWindowModeEnabled()) {
+            if (ImHexApi::System::isMultiWindowModeEnabled()) {
                 io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
                 // Enable viewport window OS decorations on Linux so that the window can be moved around on Wayland

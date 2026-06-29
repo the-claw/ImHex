@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <source_location>
 #include <thread>
+#include <hex/trace/exceptions.hpp>
 
 EXPORT_MODULE namespace hex {
 
@@ -22,7 +23,7 @@ EXPORT_MODULE namespace hex {
     class Task {
     public:
         Task() = default;
-        Task(const UnlocalizedString &unlocalizedName, u64 maxValue, bool background, bool blocking, std::function<void(Task &)> function);
+        Task(UnlocalizedString unlocalizedName, u64 maxValue, bool background, bool blocking, std::function<void(Task &)> function);
 
         Task(const Task&) = delete;
         Task(Task &&other) noexcept;
@@ -70,6 +71,8 @@ EXPORT_MODULE namespace hex {
         [[nodiscard]] u64 getValue() const;
         [[nodiscard]] u64 getMaxValue() const;
 
+        void wait() const;
+
     private:
         void finish();
         void interruption();
@@ -87,12 +90,21 @@ EXPORT_MODULE namespace hex {
         std::atomic<bool> m_background = true;
         std::atomic<bool> m_blocking = false;
 
-        std::atomic<bool> m_interrupted = false;
-        std::atomic<bool> m_finished = false;
-        std::atomic<bool> m_hadException = false;
+        std::atomic_flag m_interrupted;
+        std::atomic_flag m_finished;
+        std::atomic_flag m_hadException;
         std::string m_exceptionMessage;
 
-        struct TaskInterruptor { virtual ~TaskInterruptor() = default; };
+        struct TaskInterruptor: public std::exception {
+            TaskInterruptor() {
+                trace::disableExceptionCaptureForCurrentThread();
+            }
+            virtual ~TaskInterruptor() = default;
+
+            [[nodiscard]] const char* what() const noexcept override {
+                return "Task Interrupted";
+            }
+        };
 
         friend class TaskHolder;
         friend class TaskManager;
@@ -114,6 +126,7 @@ EXPORT_MODULE namespace hex {
         [[nodiscard]] u32 getProgress() const;
 
         void interrupt() const;
+        void wait() const;
     private:
         std::weak_ptr<Task> m_task;
     };
@@ -238,6 +251,8 @@ EXPORT_MODULE namespace hex {
 
         static const std::list<std::shared_ptr<Task>>& getRunningTasks();
         static void runDeferredCalls();
+
+        static void addTaskCompletionCallback(const std::function<void(Task&)>& function);
 
     private:
         static TaskHolder createTask(const UnlocalizedString &unlocalizedName, u64 maxValue, bool background, bool blocking, std::function<void(Task &)> function);

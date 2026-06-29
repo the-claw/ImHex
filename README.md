@@ -29,11 +29,11 @@
 
 ## Supporting
 
-If you like my work, please consider supporting me on GitHub Sponsors, Patreon or PayPal. Thanks a lot!
+If you like my work, please consider supporting me on GitHub Sponsors, Ko-Fi or PayPal. Thanks a lot!
 
 <p align="center">
 <a href="https://github.com/sponsors/WerWolv"><img src="https://werwolv.net/assets/github_banner.png" alt="GitHub donate button" /></a>
-<a href="https://www.patreon.com/werwolv"><img src="https://c5.patreon.com/external/logo/become_a_patron_button.png" alt="Patreon donate button" /></a>
+<a href="https://ko-fi.com/WerWolv"><img src="https://werwolv.net/assets/kofi_banner.png" alt="Ko-Fi donate button" /></a>
 <a href="https://werwolv.net/donate"><img src="https://werwolv.net/assets/paypal_banner.png" alt="PayPal donate button" /></a>
 </p>
 
@@ -336,8 +336,8 @@ To use ImHex, the following minimal system requirements need to be met.
 
 - **OS**: 
   - **Windows**: Windows 7 or higher (Windows 10/11 recommended)
-  - **macOS**: macOS 13 (Ventura) or higher, 
-    - Lower versions should still work too, but you'll need to compile ImHex yourself. The release binaries will NOT work due to GitHub not having any macOS 12 or lower CI runners available.
+  - **macOS**: macOS 15 (Sequoia) or higher, 
+    - Lower versions should still work too, but you'll need to compile ImHex yourself. The release binaries will NOT work due to GitHub not having any macOS 15 or lower CI runners available.
     - The macOS build is not signed and will require you to manually allow them in the Security & Privacy settings.
   - **Linux**: "Modern" Linux. The following distributions have official releases available. Other distros are supported through the AppImage, Flatpak and Snap releases.
     - Ubuntu and Debian
@@ -375,9 +375,20 @@ For more information, check out the [Compiling](/dist/compiling) guide.
 ## Contributing
 See [Contributing](/CONTRIBUTING.md)
 
-## Plugin development
 
+## Plugin development
 To develop plugins for ImHex, use the following template project to get started. You then have access to the entirety of libimhex as well as the ImHex API and the Content Registry to interact with ImHex or to add new content.
+To build a plugin, you will need to use our SDK
+
+### Getting the SDK locally
+You can build the SDK by compiling ImHex like this:
+- `cmake -G Ninja -DIMHEX_BUNDLE_PLUGIN_SDK=ON -B build`
+- `cd build`
+- `DESTDIR=install ninja install`
+The SDK will then be available at `install/usr/local/share/imhex/sdk`. You will need to set the variable `IMHEX_SDK_PATH` to that (absolute) path.
+
+### Getting the SDK in a Github Actions CI
+You can use [this action](https://github.com/WerWolv/imhex-download-sdk) to automatically download the SDK to your Github Runner
 - [ImHex Plugin Template](https://github.com/WerWolv/ImHex-Plugin-Template)
 
 

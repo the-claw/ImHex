@@ -217,7 +217,7 @@ namespace hex::plugin::builtin {
 
         auto data = gdb::readMemory(m_socket, offset, size);
         if (!data.empty())
-            std::memcpy(buffer, &data[0], data.size());
+            std::memcpy(buffer, data.data(), data.size());
     }
 
     void GDBProvider::writeToSource(u64 offset, const void *buffer, size_t size) {
@@ -254,7 +254,8 @@ namespace hex::plugin::builtin {
         };
     }
 
-    bool GDBProvider::open() {
+    prv::Provider::OpenResult GDBProvider::open() {
+        CachedProvider::open();
         std::scoped_lock lock(m_mutex);
 
         CachedProvider::open();
@@ -264,11 +265,11 @@ namespace hex::plugin::builtin {
         gdb::sendReceivePackage(m_socket, gdb::createPacket("!"));
         gdb::sendReceivePackage(m_socket, gdb::createPacket("Hg0"));
 
-        if (m_socket.isConnected()) {
-            return true;
-        } else {
-            return false;
+        if (!m_socket.isConnected()) {
+            return OpenResult::failure("hex.builtin.provider.gdb.server.error.not_connected"_lang);
         }
+
+        return {};
     }
 
     void GDBProvider::close() {
@@ -276,6 +277,8 @@ namespace hex::plugin::builtin {
 
         CachedProvider::close();
         m_socket.disconnect();
+
+        CachedProvider::close();
     }
 
     bool GDBProvider::isConnected() const {
@@ -319,7 +322,7 @@ namespace hex::plugin::builtin {
         address -= this->getBaseAddress();
 
         if (address < this->getActualSize())
-            return { Region { this->getBaseAddress() + address, this->getActualSize() - address }, true };
+            return { Region { .address=this->getBaseAddress() + address, .size=this->getActualSize() - address }, true };
         else
             return { Region::Invalid(), false };
     }

@@ -8,7 +8,7 @@
 
 namespace hex::plugin::builtin {
 
-    ViewTools::ViewTools() : View::Window("hex.builtin.view.tools.name", ICON_VS_TOOLS) {
+    ViewTools::ViewTools() : View::Scrolling("hex.builtin.view.tools.name", ICON_VS_TOOLS) {
         m_dragStartIterator = ContentRegistry::Tools::impl::getEntries().end();
 
         LayoutManager::registerLoadCallback([this](std::string_view line) {
@@ -103,6 +103,13 @@ namespace hex::plugin::builtin {
             }
             ImGui::End();
         }
+    }
+
+    void ViewTools::drawHelpText() {
+        ImGuiExt::TextFormattedWrapped("This view contains various standalone tools that didn't fit anywhere else but are useful nonetheless.");
+        ImGui::NewLine();
+        ImGuiExt::TextFormattedWrapped("Click on the arrow icon in the title bar of each tool to open or collapse it. When collapsed, you can drag the tool out of this window to create a separate floating window which can also be docked anywhere you like.");
+
     }
 
 }

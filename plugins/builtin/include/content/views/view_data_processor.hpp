@@ -42,6 +42,7 @@ namespace hex::plugin::builtin {
         ~ViewDataProcessor() override;
 
         void drawContent() override;
+        void drawHelpText() override;
 
         static nlohmann::json saveNode(const dp::Node *node);
         static nlohmann::json saveNodes(const Workspace &workspace);
@@ -55,10 +56,6 @@ namespace hex::plugin::builtin {
 
         void reloadCustomNodes();
         void updateNodePositions();
-
-        [[nodiscard]] ImGuiWindowFlags getWindowFlags() const override {
-            return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-        }
 
         std::vector<Workspace*> &getWorkspaceStack() { return *m_workspaceStack; }
 

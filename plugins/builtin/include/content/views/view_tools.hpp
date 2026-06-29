@@ -7,13 +7,14 @@
 
 namespace hex::plugin::builtin {
 
-    class ViewTools : public View::Window {
+    class ViewTools : public View::Scrolling {
     public:
         ViewTools();
         ~ViewTools() override = default;
 
         void drawContent() override;
         void drawAlwaysVisibleContent() override;
+        void drawHelpText() override;
 
     private:
         std::vector<ContentRegistry::Tools::impl::Entry>::const_iterator m_dragStartIterator;

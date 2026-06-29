@@ -197,7 +197,7 @@ namespace hex::plugin::disasm {
                                 m_currArchitecture = architectures.begin()->second();
                             }
 
-                            if (ImGui::BeginTabBar("Architecture", ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_DrawSelectedOverline)) {
+                            if (ImGui::BeginTabBar("Architecture", ImGuiTabBarFlags_TabListPopupButton | ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_DrawSelectedOverline)) {
                                 for (const auto &[name, creator] : architectures) {
                                     if (ImGui::BeginTabItem(name.c_str())) {
                                         if (m_currArchitecture->get()->getName() != name) {
@@ -252,9 +252,6 @@ namespace hex::plugin::disasm {
             }
 
             ImGui::NewLine();
-
-            ImGui::TextUnformatted("hex.disassembler.view.disassembler.disassembly.title"_lang);
-            ImGui::Separator();
 
             // Draw disassembly table
             if (ImGui::BeginTable("##disassembly", 4, ImGuiTableFlags_ScrollY | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable)) {
@@ -311,4 +308,9 @@ namespace hex::plugin::disasm {
         }
     }
 
+    void ViewDisassembler::drawHelpText() {
+        ImGuiExt::TextFormattedWrapped("This view lets you disassemble byte regions into assembly instructions of various different architectures.");
+        ImGui::NewLine();
+        ImGuiExt::TextFormattedWrapped("Select the desired Architecture from the tabs in the settings panel and configure its options as needed. Clicking the \"Disassemble\" button will disassemble the selected region (or the entire data if no region is selected) and display the resulting instructions in a table below.");
+    }
 }

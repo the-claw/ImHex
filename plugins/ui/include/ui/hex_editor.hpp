@@ -111,6 +111,7 @@ namespace hex::ui {
         void drawTooltip(u64 address, const u8 *data, size_t size) const;
         void drawScrollbar(ImVec2 characterSize);
         void drawMinimap(ImVec2 characterSize);
+        void drawMinimapPopup();
 
         void handleSelection(u64 address, u32 bytesPerCell, const u8 *data, bool cellHovered);
         std::optional<color_t> applySelectionColor(u64 byteAddress, std::optional<color_t> color);
@@ -127,17 +128,19 @@ namespace hex::ui {
         void setSelection(u64 start, u64 end) {
             if (!ImHexApi::Provider::isValid() || m_provider == nullptr)
                 return;
+            u64 size = m_provider->getActualSize();
+            u64 baseAddress = m_provider->getBaseAddress();
 
-            if (start > m_provider->getBaseAddress() + m_provider->getActualSize())
+            if (size == 0 || size - 1 > std::numeric_limits<u64>::max() - baseAddress)
                 return;
 
-            if (start < m_provider->getBaseAddress())
+            const size_t maxAddress = size + baseAddress - 1;
+
+            if (start > maxAddress || end > maxAddress)
                 return;
 
-            if (m_provider->getActualSize() == 0)
+            if (start < baseAddress || end < baseAddress)
                 return;
-
-            const size_t maxAddress = m_provider->getActualSize() + m_provider->getBaseAddress() - 1;
 
             constexpr static auto alignDown = [](u64 value, u64 alignment) {
                 return value & ~(alignment - 1);
@@ -360,7 +363,13 @@ namespace hex::ui {
             m_enteredEditingMode = true;
 
             m_editingBytes.resize(m_currDataVisualizer->getBytesPerCell());
-            m_provider->read(address + m_provider->getBaseAddress(), m_editingBytes.data(), m_editingBytes.size());
+            if (m_mode == Mode::Overwrite) {
+                m_provider->read(address + m_provider->getBaseAddress(), m_editingBytes.data(), m_editingBytes.size());
+            } else if (m_mode == Mode::Insert) {
+                std::memset(m_editingBytes.data(), 0x00, m_editingBytes.size());
+                m_provider->insert(address, m_editingBytes.size());
+            }
+
             m_editingCellType = CellType::Hex;
         }
 
@@ -440,6 +449,7 @@ namespace hex::ui {
         bool m_showMiniMap = false;
         bool m_showSelectionInFooter = false;
         int m_miniMapWidth = 5;
+        bool m_minimapValueBrightness = true;
         u32 m_byteCellPadding = 0, m_characterCellPadding = 0;
         bool m_footerCollapsed = true;
 

@@ -32,6 +32,8 @@ namespace hex {
         ImGuiID s_activeHelpId;
         bool s_helpHoverActive = false;
 
+        AutoReset<std::function<std::function<void()>(const std::string &)>> s_renderer;
+
 
         class IDStack {
         public:
@@ -55,7 +57,7 @@ namespace hex {
 
             void add(const void *pointer) {
                 const ImGuiID seed = idStack.back();
-                const ImGuiID id = ImHashData(&pointer, sizeof(pointer), seed);
+                const ImGuiID id = ImHashData((const void*) &pointer, sizeof(pointer), seed);
 
                 idStack.push_back(id);
             }
@@ -94,35 +96,47 @@ namespace hex {
     }
 
     void TutorialManager::init() {
-        EventImGuiElementRendered::subscribe([](ImGuiID id, const std::array<float, 4> bb){
-            const auto boundingBox = ImRect(bb[0], bb[1], bb[2], bb[3]);
+        if (*s_renderer == nullptr) {
+            *s_renderer = [](const std::string &message) {
+                return [message] {
+                    ImGui::PushTextWrapPos(300_scaled);
+                    ImGui::TextUnformatted(message.c_str());
+                    ImGui::PopTextWrapPos();
+                    ImGui::NewLine();
+                };
+            };
+        }
+    }
 
-            {
-                const auto element = hex::s_highlights->find(id);
-                if (element != hex::s_highlights->end()) {
-                    hex::s_highlightDisplays->emplace_back(boundingBox, element->second);
+    void TutorialManager::postElementRendered(ImGuiID id, const ImRect &boundingBox) {
+        if (!ImGui::IsRectVisible(boundingBox.Min, boundingBox.Max))
+            return;
 
-                    const auto window = ImGui::GetCurrentWindow();
-                    if (window != nullptr && window->DockNode != nullptr && window->DockNode->TabBar != nullptr)
-                        window->DockNode->TabBar->NextSelectedTabId = window->TabId;
-                }
+        {
+            const auto element = hex::s_highlights->find(id);
+            if (element != hex::s_highlights->end()) {
+                hex::s_highlightDisplays->emplace_back(boundingBox, element->second);
+
+                const auto window = ImGui::GetCurrentWindow();
+                if (window != nullptr && window->DockNode != nullptr && window->DockNode->TabBar != nullptr)
+                    window->DockNode->TabBar->NextSelectedTabId = window->TabId;
+            }
+        }
+
+        {
+            const auto element = s_interactiveHelpItems->find(id);
+            if (element != s_interactiveHelpItems->end()) {
+                (*s_interactiveHelpDisplays)[id] = boundingBox;
             }
 
-            {
-                const auto element = s_interactiveHelpItems->find(id);
-                if (element != s_interactiveHelpItems->end()) {
-                    (*s_interactiveHelpDisplays)[id] = boundingBox;
-                }
+        }
 
+        if (id != 0 && boundingBox.Contains(ImGui::GetMousePos())) {
+            if ((s_hoveredRect.GetArea() == 0 || boundingBox.GetArea() < s_hoveredRect.GetArea()) && s_interactiveHelpItems->contains(id)) {
+                s_hoveredRect = boundingBox;
+                s_hoveredId = id;
             }
-
-            if (id != 0 && boundingBox.Contains(ImGui::GetMousePos())) {
-                if ((s_hoveredRect.GetArea() == 0 || boundingBox.GetArea() < s_hoveredRect.GetArea()) && s_interactiveHelpItems->contains(id)) {
-                    s_hoveredRect = boundingBox;
-                    s_hoveredId = id;
-                }
-            }
-        });
+        }
     }
 
     const std::map<std::string, TutorialManager::Tutorial>& TutorialManager::getTutorials() {
@@ -201,9 +215,13 @@ namespace hex {
         s_currentTutorial->second.start();
     }
 
+    void TutorialManager::stopCurrentTutorial() {
+        s_currentTutorial = s_tutorials->end();
+    }
+
     void TutorialManager::drawHighlights() {
         if (s_helpHoverActive) {
-            const auto &drawList = ImGui::GetForegroundDrawList();
+            const auto &drawList = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
             drawList->AddText(ImGui::GetMousePos() + scaled({ 10, -5, }), ImGui::GetColorU32(ImGuiCol_Text), "?");
 
             for (const auto &[id, boundingBox] : *s_interactiveHelpDisplays) {
@@ -251,6 +269,7 @@ namespace hex {
             {
                 auto highlightColor = ImGuiExt::GetCustomColorVec4(ImGuiCustomCol_Highlight);
                 highlightColor.w *= ImSin(ImGui::GetTime() * 6.0F) / 4.0F + 0.75F;
+                ImHexApi::System::unlockFrameRate();
 
                 drawList->AddRect(rect.Min - ImVec2(5, 5), rect.Max + ImVec2(5, 5), ImColor(highlightColor), 5.0F, ImDrawFlags_None, 2.0F);
             }
@@ -299,10 +318,10 @@ namespace hex {
 
         if (!message.has_value()) {
             message = Tutorial::Step::Message {
-                 Position::None,
-                "",
-                "",
-                false
+                 .position=Position::None,
+                .unlocalizedTitle="",
+                .unlocalizedMessage="",
+                .allowSkip=false
             };
         }
 
@@ -329,34 +348,39 @@ namespace hex {
 
         ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
         ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
-        if (ImGui::Begin("##TutorialMessage", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
+        ImGui::SetNextWindowSize(ImVec2(300_scaled, 0));
+
+        bool open = true;
+        if (ImGui::Begin(message->unlocalizedTitle.empty() ? "##TutorialMessage" : Lang(message->unlocalizedTitle), &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoFocusOnAppearing)) {
             ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindowRead());
 
-            if (!message->unlocalizedTitle.empty())
-                ImGuiExt::Header(Lang(message->unlocalizedTitle), true);
-
+            auto &step = s_currentTutorial->second.m_currentStep;
             if (!message->unlocalizedMessage.empty()) {
-                ImGui::PushTextWrapPos(300_scaled);
-                ImGui::TextUnformatted(Lang(message->unlocalizedMessage));
-                ImGui::PopTextWrapPos();
+                step->m_drawFunction();
+                ImGui::NewLine();
                 ImGui::NewLine();
             }
 
-            ImGui::BeginDisabled(s_currentTutorial->second.m_currentStep == s_currentTutorial->second.m_steps.begin());
-            if (ImGui::ArrowButton("Backwards", ImGuiDir_Left)) {
+            ImGui::BeginDisabled(step == s_currentTutorial->second.m_steps.begin());
+            if (ImGuiExt::DimmedArrowButton("Backwards", ImGuiDir_Left)) {
                 s_currentTutorial->second.m_currentStep->advance(-1);
             }
             ImGui::EndDisabled();
 
             ImGui::SameLine();
 
-            ImGui::BeginDisabled(!message->allowSkip && s_currentTutorial->second.m_currentStep == s_currentTutorial->second.m_latestStep);
-            if (ImGui::ArrowButton("Forwards", ImGuiDir_Right)) {
-                s_currentTutorial->second.m_currentStep->advance(1);
+            ImGui::SetCursorPosX(ImGui::GetWindowWidth() - ImGui::GetFrameHeight() - ImGui::GetStyle().WindowPadding.x);
+            ImGui::BeginDisabled(!message->allowSkip && step == s_currentTutorial->second.m_latestStep);
+            if (ImGuiExt::DimmedArrowButton("Forwards", ImGuiDir_Right)) {
+                step->advance(1);
             }
             ImGui::EndDisabled();
         }
         ImGui::End();
+
+        if (!open) {
+            stopCurrentTutorial();
+        }
     }
 
     void TutorialManager::drawTutorial() {
@@ -383,6 +407,10 @@ namespace hex {
         s_highlightDisplays->clear();
     }
 
+    void TutorialManager::setRenderer(std::function<DrawFunction(const std::string &)> renderer) {
+        s_renderer = std::move(renderer);
+    }
+
     TutorialManager::Tutorial::Step& TutorialManager::Tutorial::addStep() {
         auto &newStep = m_steps.emplace_back(this);
         m_currentStep = m_steps.end();
@@ -398,6 +426,9 @@ namespace hex {
             return;
 
         m_currentStep->addHighlights();
+
+        if (m_currentStep->m_message.has_value())
+            m_currentStep->m_drawFunction = (*s_renderer)(Lang(m_currentStep->m_message->unlocalizedMessage));
     }
 
     void TutorialManager::Tutorial::Step::addHighlights() const {
@@ -422,8 +453,12 @@ namespace hex {
             std::advance(m_parent->m_latestStep, steps);
         std::advance(m_parent->m_currentStep, steps);
 
-        if (m_parent->m_currentStep != m_parent->m_steps.end())
+        if (m_parent->m_currentStep != m_parent->m_steps.end()) {
             m_parent->m_currentStep->addHighlights();
+
+            if (m_message.has_value())
+                m_parent->m_currentStep->m_drawFunction = (*s_renderer)(Lang(m_parent->m_currentStep->m_message->unlocalizedMessage));
+        }
         else
             s_currentTutorial = s_tutorials->end();
     }
@@ -446,10 +481,10 @@ namespace hex {
 
     TutorialManager::Tutorial::Step& TutorialManager::Tutorial::Step::setMessage(const UnlocalizedString &unlocalizedTitle, const UnlocalizedString &unlocalizedMessage, Position position) {
         m_message = Message {
-            position,
-            unlocalizedTitle,
-            unlocalizedMessage,
-            false
+            .position=position,
+            .unlocalizedTitle=unlocalizedTitle,
+            .unlocalizedMessage=unlocalizedMessage,
+            .allowSkip=false
         };
 
         return *this;
@@ -460,10 +495,10 @@ namespace hex {
             m_message->allowSkip = true;
         } else {
             m_message = Message {
-                Position::Bottom | Position::Right,
-                "",
-                "",
-                true
+                .position=Position::Bottom | Position::Right,
+                .unlocalizedTitle="",
+                .unlocalizedMessage="",
+                .allowSkip=true
             };
         }
 

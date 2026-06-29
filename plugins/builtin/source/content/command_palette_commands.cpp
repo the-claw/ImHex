@@ -23,7 +23,7 @@ namespace hex::plugin::builtin {
 
         class Value {
         public:
-            enum class Unit {
+            enum class Unit: u8 {
                 Unitless,
                 Decimal,
                 Hexadecimal,
@@ -287,23 +287,23 @@ namespace hex::plugin::builtin {
             "@",
             "hex.builtin.command.goto.desc",
             [](auto input) {
-                wolv::math_eval::MathEvaluator<long double> evaluator;
+                wolv::math_eval::MathEvaluator<i64> evaluator;
                 evaluator.registerStandardVariables();
                 evaluator.registerStandardFunctions();
 
-                std::optional<long double> result = evaluator.evaluate(input);
+                const auto result = evaluator.evaluate(input);
                 if (result.has_value())
-                    return fmt::format("hex.builtin.command.goto.result"_lang, result.value());
+                    return fmt::format("hex.builtin.command.goto.result"_lang, static_cast<u64>(result.value()));
                 else if (evaluator.hasError())
                     return fmt::format("Error: {}", *evaluator.getLastError());
                 else
                     return std::string("???");
             }, [](auto input) -> std::optional<std::string> {
-                wolv::math_eval::MathEvaluator<long double> evaluator;
+                wolv::math_eval::MathEvaluator<i64> evaluator;
                 evaluator.registerStandardVariables();
                 evaluator.registerStandardFunctions();
 
-                std::optional<long double> result = evaluator.evaluate(input);
+                const auto result = evaluator.evaluate(input);
                 if (result.has_value()) {
                     ImHexApi::HexEditor::setSelection(result.value(), 1);
                 }
@@ -370,7 +370,13 @@ namespace hex::plugin::builtin {
                         std::vector<std::string> names;
                         std::transform(entry.unlocalizedNames.begin(), entry.unlocalizedNames.end(), std::back_inserter(names), [](auto &name) { return Lang(name); });
 
-                        if (auto combined = wolv::util::combineStrings(names, " -> "); hex::containsIgnoreCase(combined, input) && !combined.contains(ContentRegistry::UserInterface::impl::SeparatorValue) && !combined.contains(ContentRegistry::UserInterface::impl::SubMenuValue)) {
+                        auto combined = wolv::util::combineStrings(names, " -> ");
+                        if (
+                            hex::containsIgnoreCase(combined, input) &&
+                            !combined.contains(ContentRegistry::UserInterface::impl::SeparatorValue) &&
+                            !combined.contains(ContentRegistry::UserInterface::impl::SubMenuValue) &&
+                            !combined.contains(ContentRegistry::UserInterface::impl::TaskBarMenuValue)
+                        ) {
                             result.emplace_back(ContentRegistry::CommandPalette::impl::QueryResult {
                                 std::move(combined),
                                 [&entry](const auto&) { entry.callback(); }

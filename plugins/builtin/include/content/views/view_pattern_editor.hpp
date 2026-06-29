@@ -7,6 +7,7 @@
 #include <pl/pattern_language.hpp>
 #include <pl/core/errors/error.hpp>
 
+#include <hex/api/content_registry/settings.hpp>
 #include <ui/text_editor.hpp>
 #include <content/text_highlighting/pattern_language.hpp>
 #include <hex/helpers/magic.hpp>
@@ -20,76 +21,60 @@ namespace hex::plugin::builtin {
     public:
         const std::string& get(prv::Provider *provider) const;
         std::string& get(prv::Provider *provider);
+        const wolv::io::ChangeTracker& getTracker(prv::Provider *provider) const;
+        wolv::io::ChangeTracker& getTracker(prv::Provider *provider);
+        const bool& getIgnoreNextChangeEvent(prv::Provider *provider) const;
+        bool& getIgnoreNextChangeEvent(prv::Provider *provider);
+        const bool& getChangeEventAcknowledgementPending(prv::Provider *provider) const;
+        bool& getChangeEventAcknowledgementPending(prv::Provider *provider);
+        [[nodiscard]] bool hasProviderSpecificSource(prv::Provider *provider) const;
 
-        bool isSynced() const;
+        [[nodiscard]] bool isSynced() const;
         void enableSync(bool enabled);
 
     private:
         bool m_synced = false;
         PerProvider<std::string> m_perProviderSource;
         std::string m_sharedSource;
+        PerProvider<wolv::io::ChangeTracker> m_PPchangeTracker;
+        PerProvider<bool> m_PPignoreNextChangeEvent;
+        PerProvider<bool> m_PPchangeEventAcknowledgementPending;
+        wolv::io::ChangeTracker m_sharedChangeTracker;
+        bool m_sharedIgnoreNextChangeEvent = false;
+        bool m_sharedChangeEventAcknowledgementPending = false;
     };
 
+    using IdentifierHighlighter = hex::plugin::builtin::IdentifierHighlighter;
     class ViewPatternEditor : public View::Window {
     public:
         ViewPatternEditor();
         ~ViewPatternEditor() override;
 
         void drawAlwaysVisibleContent() override;
-        std::unique_ptr<pl::PatternLanguage> *getPatternLanguage() {
-            return &m_editorRuntime;
-        }
-
-        ui::TextEditor *getTextEditor() {
-            auto provider = ImHexApi::Provider::get();
-            if (provider == nullptr)
-                return nullptr;
-
-            return &m_textEditor.get(provider);
-        }
-
-        bool getChangesWereParsed() const {
-            return m_changesWereParsed;
-        }
-
-        u32  getRunningParsers () const {
-            return m_runningParsers;
-        }
-
-        u32  getRunningEvaluators () const {
-            return m_runningEvaluators;
-        }
-
-        void setChangesWereParsed(bool changesWereParsed) {
-            m_changesWereParsed = changesWereParsed;
-        }
-
+        std::unique_ptr<pl::PatternLanguage> *getPatternLanguage() { return &m_editorRuntime; }
+        ui::TextEditor *getTextEditor();
+        void incrementRunningHighlighters( i32 amount) { m_runningHighlighters += amount; }
+        void setChangesWereColored(bool changesWereColored) { m_changesWereColored = changesWereColored; }
         void drawContent() override;
-        [[nodiscard]] ImGuiWindowFlags getWindowFlags() const override {
-            return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-        }
+        enum class DangerousFunctionPerms : u8 { Ask, Allow, Deny };
 
-        void setPopupWindowHeight(u32 height) { m_popupWindowHeight = height; }
-        u32 getPopupWindowHeight() const { return m_popupWindowHeight; }
-
-        enum class DangerousFunctionPerms : u8 {
-            Ask,
-            Allow,
-            Deny
-        };
+        void drawHelpText() override;
+        bool interrupted() const { return m_interrupt;}
+        void resetInterrupt() { m_interrupt = false;}
+        void interrupt() { m_interrupt = true; }
 
     private:
         class PopupAcceptPattern;
 
         struct PatternVariable {
-            bool inVariable;
-            bool outVariable;
+            bool inVariable{};
+            bool outVariable{};
 
-            pl::core::Token::ValueType type;
+            pl::core::Token::ValueType type{};
             pl::core::Token::Literal value;
         };
 
-        enum class EnvVarType
+        enum class EnvVarType : u8
         {
             Integer,
             Float,
@@ -121,23 +106,35 @@ namespace hex::plugin::builtin {
         bool m_triggerEvaluation  = false;
         std::atomic<bool> m_triggerAutoEvaluate = false;
 
-        volatile bool m_lastEvaluationProcessed = true;
-        bool m_lastEvaluationResult    = false;
+        std::atomic<bool> m_lastEvaluationProcessed = true;
+        std::atomic<int> m_lastEvaluationResult    = 0;
 
         std::atomic<u32> m_runningEvaluators = 0;
         std::atomic<u32> m_runningParsers    = 0;
+        std::atomic<u32> m_runningHighlighters = 0;
 
-        bool m_changesWereParsed = false;
-        PerProvider<bool> m_hasUnevaluatedChanges;
+        PerProvider<bool> m_hasUnparsedChanges;
+        std::atomic<bool> m_changesWereColored = false;
+        std::atomic<bool> m_allStepsCompleted = false;
+        std::atomic<bool> m_interrupt;
+
         std::chrono::time_point<std::chrono::steady_clock> m_lastEditorChangeTime;
 
         PerProvider<ui::TextEditor> m_textEditor, m_consoleEditor;
+        PerProvider<IdentifierHighlighter> m_identifierHighlighter;
         std::atomic<bool> m_consoleNeedsUpdate = false;
 
         std::atomic<bool> m_dangerousFunctionCalled = false;
         std::atomic<DangerousFunctionPerms> m_dangerousFunctionsAllowed = DangerousFunctionPerms::Ask;
 
-        bool m_autoLoadPatterns = true;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.general", "hex.builtin.setting.general.suggest_patterns"> m_suggestSupportedPatterns = true;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.general", "hex.builtin.setting.general.auto_apply_patterns"> m_autoApplyPatterns = false;
+        ContentRegistry::Settings::SettingsVariable<int, "hex.builtin.setting.pattern_editor", "hex.builtin.setting.pattern_editor.tab_size"> m_tabSize = 4;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.pattern_editor", "hex.builtin.setting.pattern_editor.show_white_spaces"> m_showWhiteSpaces = false;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.pattern_editor", "hex.builtin.setting.pattern_editor.disable_folds"> m_codeFoldsDisabled = false;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.pattern_editor", "hex.builtin.setting.pattern_editor.syntactic_highlighting"> m_colorizeSyntax = true;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.pattern_editor", "hex.builtin.setting.pattern_editor.semantic_highlighting"> m_colorizeIdentifiers = true;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.pattern_editor", "hex.builtin.setting.pattern_editor.auto_indent"> m_autoIndent = true;
 
         PerProvider<ui::VisualizerDrawer> m_visualizerDrawer;
         bool m_tooltipJustOpened = false;
@@ -148,15 +145,8 @@ namespace hex::plugin::builtin {
 
         std::mutex m_logMutex;
 
-        PerProvider<ui::TextEditor::Coordinates>  m_cursorPosition;
-
-        PerProvider<ui::TextEditor::Coordinates> m_consoleCursorPosition;
-        PerProvider<bool> m_cursorNeedsUpdate;
-        PerProvider<bool> m_consoleCursorNeedsUpdate;
-        PerProvider<ui::TextEditor::Selection> m_selection;
-        PerProvider<ui::TextEditor::Selection> m_consoleSelection;
-        PerProvider<size_t> m_consoleLongestLineLength;
-        PerProvider<ui::TextEditor::Breakpoints> m_breakpoints;
+        PerProvider<ImVec2> m_scroll;
+        PerProvider<ImVec2> m_consoleScroll;
         PerProvider<std::optional<pl::core::err::PatternLanguageError>> m_lastEvaluationError;
         PerProvider<std::vector<pl::core::err::CompileError>> m_lastCompileError;
         PerProvider<const std::vector<pl::core::Evaluator::StackTrace>*> m_callStack;
@@ -166,7 +156,7 @@ namespace hex::plugin::builtin {
 
         PerProvider<std::list<EnvVar>> m_envVarEntries;
 
-        PerProvider<TaskHolder> m_analysisTask;
+        TaskHolder m_analysisTask;
         PerProvider<bool> m_shouldAnalyze;
         PerProvider<bool> m_breakpointHit;
         PerProvider<bool> m_debuggerActive;
@@ -176,23 +166,19 @@ namespace hex::plugin::builtin {
 
         std::array<AccessData, 512> m_accessHistory = {};
         u32 m_accessHistoryIndex = 0;
-        bool m_parentHighlightingEnabled = true;
-        bool m_replaceMode = false;
+        ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.hex_editor", "hex.builtin.setting.hex_editor.pattern_parent_highlighting"> m_parentHighlightingEnabled = false;        bool m_replaceMode = false;
         bool m_openFindReplacePopUp = false;
         bool m_openGotoLinePopUp = false;
-        bool m_patternEvaluating = false;
         std::map<std::fs::path, std::string> m_patternNames;
-        PerProvider<wolv::io::ChangeTracker> m_changeTracker;
-        PerProvider<bool> m_ignoreNextChangeEvent;
-        PerProvider<bool> m_changeEventAcknowledgementPending;
         PerProvider<bool> m_patternFileDirty;
+        PerProvider<bool> m_patternFileInitialized;
 
         ImRect m_textEditorHoverBox;
         ImRect m_consoleHoverBox;
         std::string m_focusedSubWindowName;
         float m_popupWindowHeight = 0;
         float m_popupWindowHeightChange = 0;
-        bool m_frPopupIsClosed = true;
+        bool m_findReplacePopupIsClosed = true;
         bool m_gotoPopupIsClosed = true;
 
         static inline std::array<std::string,256> m_findHistory;
@@ -202,7 +188,6 @@ namespace hex::plugin::builtin {
         static inline u32 m_replaceHistorySize = 0;
         static inline u32 m_replaceHistoryIndex = 0;
 
-        TextHighlighter m_textHighlighter = TextHighlighter(this,&this->m_editorRuntime);
     private:
         void drawConsole(ImVec2 size);
         void drawDebugger(ImVec2 size);

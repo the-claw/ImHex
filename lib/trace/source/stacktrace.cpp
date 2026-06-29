@@ -218,7 +218,7 @@ static std::mutex s_traceMutex;
             }
 
             StackTraceResult getStackTrace() {
-                std::lock_guard lock(s_traceMutex);
+                std::scoped_lock lock(s_traceMutex);
 
                 static std::vector<StackFrame> result;
 
@@ -232,10 +232,10 @@ static std::mutex s_traceMutex;
                     auto fileName = info.dli_fname != nullptr ? std::filesystem::path(info.dli_fname).filename().string() : "??";
                     auto demangledName = info.dli_sname != nullptr ? demangle(info.dli_sname) : "??";
 
-                    result.push_back(StackFrame { std::move(fileName), std::move(demangledName), 0 });
+                    result.push_back(StackFrame { .file=std::move(fileName), .function=std::move(demangledName), .line=0 });
                 }
 
-                return StackTraceResult{ result, "execinfo" };
+                return StackTraceResult{ .stackFrames=result, .implementationName="execinfo" };
             }
 
         }
@@ -246,9 +246,11 @@ static std::mutex s_traceMutex;
 
     #if __has_include(BACKTRACE_HEADER)
 
-        #include BACKTRACE_HEADER
-
-        #include <wolv/io/fs.hpp>
+        #include <backtrace.h>
+        #include <unistd.h>
+        #include <string>
+        #include <filesystem>
+        #include <linux/limits.h>
 
         namespace hex::trace {
 
@@ -256,16 +258,13 @@ static std::mutex s_traceMutex;
 
 
             void initialize() {
-                std::lock_guard lock(s_traceMutex);
+                std::scoped_lock lock(s_traceMutex);
 
-                if (auto executablePath = wolv::io::fs::getExecutablePath(); executablePath.has_value()) {
-                    static std::string path = executablePath->string();
-                    s_backtraceState = backtrace_create_state(path.c_str(), 1, [](void *, const char *, int) { }, nullptr);
-                }
+                s_backtraceState = backtrace_create_state(nullptr, 1, [](void *, const char *, int) { }, nullptr);
             }
 
             StackTraceResult getStackTrace() {
-                std::lock_guard lock(s_traceMutex);
+                std::scoped_lock lock(s_traceMutex);
 
                 static std::vector<StackFrame> result;
 

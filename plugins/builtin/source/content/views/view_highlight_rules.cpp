@@ -181,7 +181,7 @@ namespace hex::plugin::builtin {
         // Draw a table containing all the existing highlighting rules
         if (ImGui::BeginTable("RulesList", 2, ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY, ImGui::GetContentRegionAvail() - ImVec2(0, ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y))) {
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 1);
-            ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_WidthFixed, 10_scaled);
+            ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_WidthFixed, 15_scaled);
 
             for (auto it = m_rules->begin(); it != m_rules->end(); ++it) {
                 auto &rule = *it;
@@ -196,6 +196,9 @@ namespace hex::plugin::builtin {
                     m_selectedRule = it;
                 }
                 ImGui::EndDisabled();
+
+                if (m_selectedRule == it && !rule.enabled)
+                    m_selectedRule = m_rules->end();
 
                 // Draw enabled checkbox
                 ImGui::TableNextColumn();
@@ -327,4 +330,13 @@ namespace hex::plugin::builtin {
         }
     }
 
+    void ViewHighlightRules::drawHelpText() {
+        ImGuiExt::TextFormattedWrapped("This view allows you to create custom highlighting rules based on mathematical expressions. Each rule can contain multiple expressions, each defining a color and a mathematical condition. When the condition evaluates to true for a given byte or range of bytes, those bytes's text will be highlighted with the specified color in the hex editor.\n\n"
+                                      "You can use the following variables in your expressions:\n"
+                                      "- 'value': The byte value at the current offset.\n"
+                                      "- 'offset': The current byte offset within the data source.\n\n"
+                                      "Examples of expressions:\n"
+                                      "- 'value == 0x90' : Highlights all x86 NOP instructions (0x90).\n"
+                                      "- 'value >= 0x41 && value <= 0x5A' : Highlights all uppercase ASCII letters.");
+    }
 }

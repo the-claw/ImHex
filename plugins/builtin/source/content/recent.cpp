@@ -1,3 +1,5 @@
+#include <content/recent.hpp>
+
 #include <imgui.h>
 #include <imgui_internal.h>
 
@@ -17,12 +19,12 @@
 #include <wolv/utils/guards.hpp>
 #include <wolv/utils/string.hpp>
 
-#include <content/recent.hpp>
 #include <toasts/toast_notification.hpp>
 #include <fonts/vscode_icons.hpp>
 
 #include <ranges>
 #include <unordered_set>
+#include <hex/api/content_registry/views.hpp>
 #include <hex/helpers/menu_items.hpp>
 
 namespace hex::plugin::builtin::recent {
@@ -36,57 +38,111 @@ namespace hex::plugin::builtin::recent {
         std::list<RecentEntry> s_recentEntries;
         std::atomic_bool s_autoBackupsFound = false;
 
-
-        class PopupAutoBackups : public Popup<PopupAutoBackups> {
-        private:
-            struct BackupEntry {
-                std::string displayName;
-                std::fs::path path;
-            };
-        public:
-            PopupAutoBackups() : Popup("hex.builtin.welcome.start.recent.auto_backups", true, true) {
-                for (const auto &backupPath : paths::Backups.read()) {
-                    for (const auto &entry : std::fs::directory_iterator(backupPath)) {
-                        if (entry.is_regular_file() && entry.path().extension() == ".hexproj") {
-                            wolv::io::File backupFile(entry.path(), wolv::io::File::Mode::Read);
-
-                            m_backups.emplace_back(
-                                fmt::format("hex.builtin.welcome.start.recent.auto_backups.backup"_lang, fmt::gmtime(backupFile.getFileInfo()->st_ctime)),
-                                entry.path()
-                            );
-                        }
-                    }
-                }
-            }
-
-            void drawContent() override {
-                if (ImGui::BeginTable("AutoBackups", 1, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV, ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 5))) {
-                    for (const auto &backup : m_backups | std::views::reverse | std::views::take(10)) {
-                        ImGui::TableNextRow();
-                        ImGui::TableNextColumn();
-                        if (ImGui::Selectable(backup.displayName.c_str())) {
-                            ProjectFile::load(backup.path);
-                            Popup::close();
-                        }
-                    }
-
-                    ImGui::EndTable();
-                }
-
-                if (ImGui::IsKeyPressed(ImGuiKey_Escape))
-                    this->close();
-            }
-
-            [[nodiscard]] ImGuiWindowFlags getFlags() const override {
-                return ImGuiWindowFlags_AlwaysAutoResize;
-            }
-
-        private:
-            std::vector<BackupEntry> m_backups;
-        };
-
     }
 
+    std::vector<PopupAutoBackups::BackupEntry> PopupAutoBackups::getAutoBackups() {
+        std::set<BackupEntry> result;
+
+        for (const auto &backupPath : paths::Backups.read()) {
+            for (const auto &entry : std::fs::directory_iterator(backupPath)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".hexproj") {
+                    // auto_backup.{:%y%m%d_%H%M%S}.hexproj
+                    auto fileName = wolv::util::toUTF8String(entry.path().stem());
+                    if (!fileName.starts_with("auto_backup."))
+                        continue;
+
+                    wolv::io::File backupFile(entry.path(), wolv::io::File::Mode::Read);
+
+                    auto creationTimeString = fileName.substr(12);
+
+                    std::tm utcTm = {};
+                    if (sscanf(creationTimeString.c_str(), "%2d%2d%2d_%2d%2d%2d",
+                        &utcTm.tm_year,
+                        &utcTm.tm_mon,
+                        &utcTm.tm_mday,
+                        &utcTm.tm_hour,
+                        &utcTm.tm_min,
+                        &utcTm.tm_sec
+                    ) != 6) {
+                        continue;
+                    }
+
+                    utcTm.tm_year += 100; // Years since 1900
+                    utcTm.tm_mon -= 1;    // Months since January
+
+                    auto utcTime = std::mktime(&utcTm);
+                    if (utcTime == 0)
+                        continue;
+
+                    std::tm *localTm = std::localtime(&utcTime);
+                    if (localTm == nullptr)
+                        continue;
+
+                    result.emplace(
+                        fmt::format("hex.builtin.welcome.start.recent.auto_backups.backup"_lang, *localTm),
+                        entry.path(),
+                        *localTm
+                    );
+                }
+            }
+        }
+
+        return { result.begin(), result.end() };
+    }
+
+    PopupAutoBackups::PopupAutoBackups() : Popup("hex.builtin.welcome.start.recent.auto_backups", true, true) {
+        m_backups = getAutoBackups();
+    }
+
+    void PopupAutoBackups::drawContent() {
+        if (ImGui::BeginTable("AutoBackups", 1, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV, ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 5))) {
+            for (const auto &backup : m_backups | std::views::reverse | std::views::take(10)) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                if (ImGui::Selectable(backup.displayName.c_str())) {
+                    ProjectFile::load(backup.path);
+                    Popup::close();
+                }
+            }
+
+            ImGui::EndTable();
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+            this->close();
+    }
+
+    [[nodiscard]] ImGuiWindowFlags PopupAutoBackups::getFlags() const {
+        return ImGuiWindowFlags_AlwaysAutoResize;
+    }
+
+    static void saveCurrentProjectAsRecent() {
+        if (!ContentRegistry::Settings::read<bool>("hex.builtin.setting.general", "hex.builtin.setting.general.save_recent_providers", true)) {
+            return;
+        }
+        auto fileName = fmt::format("{:%y%m%d_%H%M%S}.json", fmt::gmtime(std::chrono::system_clock::now()));
+
+        auto projectFileName = ProjectFile::getPath().filename();
+        if (projectFileName == BackupFileName)
+            return;
+
+        // The recent provider is saved to every "recent" directory
+        for (const auto &recentPath : paths::Recent.write()) {
+            wolv::io::File recentFile(recentPath / fileName, wolv::io::File::Mode::Create);
+            if (!recentFile.isValid())
+                continue;
+
+            nlohmann::json recentEntry {
+                { "type", "project" },
+                { "displayName", wolv::util::toUTF8String(projectFileName) },
+                { "path", wolv::util::toUTF8String(ProjectFile::getPath()) }
+            };
+
+            recentFile.writeString(recentEntry.dump(4));
+        }
+
+        updateRecentEntries();
+    }
 
     void registerEventHandlers() {
         // Save every opened provider as a "recent" shortcut
@@ -123,33 +179,10 @@ namespace hex::plugin::builtin::recent {
             updateRecentEntries();
         });
 
-        // Save opened projects as a "recent" shortcut
-        (void)EventProjectOpened::subscribe([] {
-             if (ContentRegistry::Settings::read<bool>("hex.builtin.setting.general", "hex.builtin.setting.general.save_recent_providers", true)) {
-                auto fileName = fmt::format("{:%y%m%d_%H%M%S}.json", fmt::gmtime(std::chrono::system_clock::now()));
-
-                auto projectFileName = ProjectFile::getPath().filename();
-                if (projectFileName == BackupFileName)
-                    return;
-
-                // The recent provider is saved to every "recent" directory
-                for (const auto &recentPath : paths::Recent.write()) {
-                    wolv::io::File recentFile(recentPath / fileName, wolv::io::File::Mode::Create);
-                    if (!recentFile.isValid())
-                        continue;
-
-                    nlohmann::json recentEntry {
-                        { "type", "project" },
-                        { "displayName", wolv::util::toUTF8String(projectFileName) },
-                        { "path", wolv::util::toUTF8String(ProjectFile::getPath()) }
-                    };
-
-                    recentFile.writeString(recentEntry.dump(4));
-                }
-            }
-            
-            updateRecentEntries();
-        });
+        // Add opened projects to "recents" shortcuts
+        (void)EventProjectOpened::subscribe(saveCurrentProjectAsRecent);
+        // When saving a project, update its "recents" entry. This is mostly useful when using saving a new project
+        (void)EventProjectSaved::subscribe(saveCurrentProjectAsRecent);
     }
 
     void updateRecentEntries() {
@@ -176,9 +209,9 @@ namespace hex::plugin::builtin::recent {
                 return std::fs::last_write_time(a) > std::fs::last_write_time(b);
             });
 
-            std::unordered_set<RecentEntry, RecentEntry::HashFunction> uniqueProviders;
+            std::unordered_set<RecentEntry, RecentEntry::HashFunction> alreadyAddedProviders;
             for (const auto &path : recentFilePaths) {
-                if (uniqueProviders.size() >= MaxRecentEntries)
+                if (s_recentEntries.size() >= MaxRecentEntries)
                     break;
 
                 try {
@@ -193,12 +226,19 @@ namespace hex::plugin::builtin::recent {
                     }
 
                     auto jsonData = nlohmann::json::parse(content);
-                    uniqueProviders.insert(RecentEntry {
+
+                    auto entry = RecentEntry {
                         .displayName    = jsonData.at("displayName"),
                         .type           = jsonData.at("type"),
                         .entryFilePath  = path,
                         .data           = jsonData
-                    });
+                    };
+
+                    // Do not add entry twice
+                    if (!alreadyAddedProviders.insert(entry).second)
+                        continue;
+
+                    s_recentEntries.push_back(entry);
                 } catch (const std::exception &e) {
                     log::error("Failed to parse recent file: {}", e.what());
                 }
@@ -207,7 +247,7 @@ namespace hex::plugin::builtin::recent {
             // Delete all recent provider files that are not in the list
             for (const auto &path : recentFilePaths) {
                 bool found = false;
-                for (const auto &provider : uniqueProviders) {
+                for (const auto &provider : s_recentEntries) {
                     if (path == provider.entryFilePath) {
                         found = true;
                         break;
@@ -217,8 +257,6 @@ namespace hex::plugin::builtin::recent {
                 if (!found)
                     wolv::io::fs::remove(path);
             }
-
-            std::copy(uniqueProviders.begin(), uniqueProviders.end(), std::front_inserter(s_recentEntries));
 
             s_autoBackupsFound = false;
             for (const auto &backupPath : paths::Backups.read()) {
@@ -241,18 +279,11 @@ namespace hex::plugin::builtin::recent {
             return;
         }
 
-        auto *provider = ImHexApi::Provider::createProvider(recentEntry.type, true);
+        auto provider = ImHexApi::Provider::createProvider(recentEntry.type, true);
         if (provider != nullptr) {
             provider->loadSettings(recentEntry.data);
 
-            TaskManager::createBlockingTask("hex.builtin.provider.opening", TaskManager::NoProgress, [provider]() {
-                if (!provider->open() || !provider->isAvailable()) {
-                    ui::ToastError::open(fmt::format("hex.builtin.provider.error.open"_lang, provider->getErrorMessage()));
-                    TaskManager::doLater([provider] { ImHexApi::Provider::remove(provider); });
-                } else {
-                    TaskManager::doLater([provider]{ EventProviderOpened::post(provider); });
-                }
-            });
+            ImHexApi::Provider::openProvider(provider);
 
             updateRecentEntries();
         }
@@ -277,7 +308,7 @@ namespace hex::plugin::builtin::recent {
 
                     const char* icon;
                     if (isProject) {
-                        icon = ICON_VS_PROJECT;
+                        icon = ICON_VS_NOTEBOOK;
                     } else {
                         icon = ICON_VS_FILE_BINARY;
                     }
@@ -389,6 +420,6 @@ namespace hex::plugin::builtin::recent {
             }
         }, [] {
             return TaskManager::getRunningTaskCount() == 0 && !s_recentEntriesUpdating && !s_recentEntries.empty();
-        });
+        }, ContentRegistry::Views::getViewByName("hex.builtin.view.hex_editor.name"), true);
     }
 }

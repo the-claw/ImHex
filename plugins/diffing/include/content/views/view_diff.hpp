@@ -20,7 +20,7 @@ namespace hex::plugin::diffing {
 
         void drawContent() override;
         void drawAlwaysVisibleContent() override;
-        ImGuiWindowFlags getWindowFlags() const override { return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse; }
+        void drawHelpText() override;
 
     public:
         struct Column {

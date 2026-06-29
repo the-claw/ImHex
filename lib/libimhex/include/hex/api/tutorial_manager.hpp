@@ -10,6 +10,8 @@
 
 #include <hex/ui/imgui_imhex_extensions.h>
 
+struct ImRect;
+
 EXPORT_MODULE namespace hex {
 
     class TutorialManager {
@@ -21,6 +23,8 @@ EXPORT_MODULE namespace hex {
             Left    = 4,
             Right   = 8
         };
+
+        using DrawFunction = std::function<void()>;
 
         struct Tutorial {
             Tutorial() = delete;
@@ -101,6 +105,7 @@ EXPORT_MODULE namespace hex {
                 std::vector<Highlight> m_highlights;
                 std::optional<Message> m_message;
                 std::function<void()> m_onAppear, m_onComplete;
+                DrawFunction m_drawFunction;
             };
 
             Step& addStep();
@@ -146,6 +151,7 @@ EXPORT_MODULE namespace hex {
          * @param unlocalizedName Name of tutorial to start
          */
         static void startTutorial(const UnlocalizedString &unlocalizedName);
+        static void stopCurrentTutorial();
 
         static void startHelpHover();
         static void addInteractiveHelpText(std::initializer_list<std::variant<Lang, std::string, int>> &&ids, UnlocalizedString unlocalizedString);
@@ -165,6 +171,10 @@ EXPORT_MODULE namespace hex {
          * @brief Resets the tutorial manager
          */
         static void reset();
+
+        static void setRenderer(std::function<DrawFunction(const std::string &)> renderer);
+
+        static void postElementRendered(ImGuiID id, const ImRect &boundingBox);
 
     private:
         TutorialManager() = delete;

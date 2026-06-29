@@ -20,6 +20,7 @@
 
 #include <wolv/io/file.hpp>
 #include <wolv/utils/guards.hpp>
+#include "imgui_internal.h"
 
 namespace hex::plugin::builtin {
 
@@ -40,15 +41,15 @@ namespace hex::plugin::builtin {
                 *id = bookmarkId;
 
             auto bookmark = ImHexApi::Bookmarks::Entry {
-                region,
-                name,
-                std::move(comment),
-                color,
-                true,
-                bookmarkId
+                .region=region,
+                .name=name,
+                .comment=std::move(comment),
+                .color=color,
+                .locked=true,
+                .id=bookmarkId
             };
 
-            m_bookmarks->emplace_back(std::move(bookmark), true);
+            m_bookmarks->emplace_back(std::move(bookmark), true, ui::Markdown(bookmark.comment));
 
             ImHexApi::Provider::markDirty();
 
@@ -72,7 +73,7 @@ namespace hex::plugin::builtin {
                 if (!bookmark.highlightVisible)
                     continue;
 
-                if (Region { address, size }.isWithin(bookmark.entry.region)) {
+                if (Region { .address=address, .size=size }.isWithin(bookmark.entry.region)) {
                     color = blendColors(color, bookmark.entry.color);
                 }
             }
@@ -85,12 +86,12 @@ namespace hex::plugin::builtin {
             std::ignore = data;
 
             // Loop over all bookmarks
-            for (const auto &[bookmark, highlightVisible] : *m_bookmarks) {
+            for (auto &[bookmark, highlightVisible, commentDisplay] : *m_bookmarks) {
                 if (!highlightVisible)
                     continue;
 
                 // Make sure the bookmark overlaps the currently hovered address
-                if (!Region { address, size }.isWithin(bookmark.region))
+                if (!Region { .address=address, .size=size }.isWithin(bookmark.region))
                     continue;
 
                 // Draw tooltip
@@ -129,7 +130,7 @@ namespace hex::plugin::builtin {
                                     ImGuiExt::TextFormatted("{}: ", "hex.builtin.view.bookmarks.header.comment"_lang.get());
                                     ImGui::TableNextColumn();
                                     ImGui::PushTextWrapPos(ImGui::CalcTextSize("X").x * 40);
-                                    ImGuiExt::TextFormattedWrapped("{}", bookmark.comment);
+                                    commentDisplay.draw();
                                     ImGui::PopTextWrapPos();
                                 }
 
@@ -183,7 +184,7 @@ namespace hex::plugin::builtin {
 
             result += "## Bookmarks\n\n";
 
-            for (const auto &[bookmark, highlightVisible] : bookmarks) {
+            for (const auto &[bookmark, highlightVisible, commentDisplay] : bookmarks) {
                 result += fmt::format("### <span style=\"background-color: #{:06X}80\">{} [0x{:04X} - 0x{:04X}]</span>\n\n", hex::changeEndianness(bookmark.color, std::endian::big) >> 8, bookmark.name, bookmark.region.getStartAddress(), bookmark.region.getEndAddress());
 
                 for (const auto &line : wolv::util::splitString(bookmark.comment, "\n"))
@@ -317,7 +318,7 @@ namespace hex::plugin::builtin {
 
             // Draw all bookmarks
             for (auto it = m_bookmarks->begin(); it != m_bookmarks->end(); ++it) {
-                auto &[bookmark, highlightVisible] = *it;
+                auto &[bookmark, highlightVisible, commentDisplay] = *it;
                 auto &[region, name, comment, color, locked, bookmarkId] = bookmark;
 
                 // Apply filter
@@ -362,7 +363,7 @@ namespace hex::plugin::builtin {
                         if (!comment.empty()) {
                             ImGui::Separator();
                             ImGui::PushTextWrapPos(300_scaled);
-                            ImGuiExt::TextFormatted("{}", comment);
+                            commentDisplay.draw();
                             ImGui::PopTextWrapPos();
                         }
 
@@ -389,14 +390,13 @@ namespace hex::plugin::builtin {
                         auto provider = ImHexApi::Provider::get();
                         TaskManager::doLater([region, provider, name]{
                             auto newProvider = ImHexApi::Provider::createProvider("hex.builtin.provider.view", true);
-                            if (auto *viewProvider = dynamic_cast<ViewProvider*>(newProvider); viewProvider != nullptr) {
+                            if (auto *viewProvider = dynamic_cast<ViewProvider*>(newProvider.get()); viewProvider != nullptr) {
                                 viewProvider->setProvider(region.getStartAddress(), region.getSize(), provider);
                                 viewProvider->setName(fmt::format("'{}' View", name));
 
-                                if (viewProvider->open()) {
-                                    EventProviderOpened::post(viewProvider);
-                                    AchievementManager::unlockAchievement("hex.builtin.achievement.hex_editor", "hex.builtin.achievement.hex_editor.open_new_view.name");
-                                }
+                                ImHexApi::Provider::openProvider(newProvider);
+
+                                AchievementManager::unlockAchievement("hex.builtin.achievement.hex_editor", "hex.builtin.achievement.hex_editor.open_new_view.name");
                             }
                         });
                     }
@@ -520,7 +520,13 @@ namespace hex::plugin::builtin {
                         if (ImGuiExt::BeginSubWindow("hex.builtin.view.bookmarks.header.comment"_lang)) {
                             ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetStyleColorVec4(ImGuiCol_ChildBg));
                             ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1_scaled);
-                            ImGui::InputTextMultiline("##comment", comment, ImVec2(ImGui::GetContentRegionAvail().x, 150_scaled), locked ? ImGuiInputTextFlags_ReadOnly : ImGuiInputTextFlags_None);
+                            if (!locked) {
+                                if (ImGui::InputTextMultiline("##comment", comment, ImVec2(ImGui::GetContentRegionAvail().x, 150_scaled), locked ? ImGuiInputTextFlags_ReadOnly : ImGuiInputTextFlags_None)) {
+                                    commentDisplay = ui::Markdown(comment);
+                                }
+                            } else {
+                                commentDisplay.draw();
+                            }
                             ImGui::PopStyleVar();
                             ImGui::PopStyleColor();
                         }
@@ -558,7 +564,7 @@ namespace hex::plugin::builtin {
 
             m_bookmarks.get(provider).push_back({
                 {
-                    .region     = { region["address"], region["size"] },
+                    .region     = { .address=region["address"], .size=region["size"] },
                     .name       = bookmark["name"],
                     .comment    = bookmark["comment"],
                     .color      = bookmark["color"],
@@ -566,6 +572,7 @@ namespace hex::plugin::builtin {
                     .id         = bookmark.contains("id") ? bookmark["id"].get<u64>() : m_currBookmarkId.get(provider),
                 },
                 bookmark.contains("highlightVisible") ? bookmark["highlightVisible"].get<bool>() : true,
+                ui::Markdown(bookmark["comment"])
             });
             if (bookmark.contains("id"))
                 m_currBookmarkId.get(provider) = std::max<u64>(m_currBookmarkId.get(provider), bookmark["id"].get<i64>() + 1);
@@ -579,7 +586,7 @@ namespace hex::plugin::builtin {
     bool ViewBookmarks::exportBookmarks(prv::Provider *provider, nlohmann::json &json) {
         json["bookmarks"] = nlohmann::json::array();
         size_t index = 0;
-        for (const auto &[bookmark, highlightVisible]  : m_bookmarks.get(provider)) {
+        for (const auto &[bookmark, highlightVisible, commentDisplay]  : m_bookmarks.get(provider)) {
             json["bookmarks"][index] = {
                     { "name",       bookmark.name },
                     { "comment",    bookmark.comment },
@@ -619,7 +626,9 @@ namespace hex::plugin::builtin {
             fs::openFileBrowser(fs::DialogMode::Open, { { "Bookmarks File", "hexbm"} }, [&, this](const std::fs::path &path) {
                 try {
                     this->importBookmarks(ImHexApi::Provider::get(), nlohmann::json::parse(wolv::io::File(path, wolv::io::File::Mode::Read).readString()));
-                } catch (...) { }
+                } catch (const std::exception &e) {
+                    log::warn("Failed to import bookmarks: {}", e.what());
+                }
             });
         }, ImHexApi::Provider::isValid);
 
@@ -639,4 +648,18 @@ namespace hex::plugin::builtin {
         });
     }
 
+    void ViewBookmarks::drawHelpText() {
+        ImGuiExt::TextFormattedWrapped("All your created Bookmarks will be listed in here.");
+        ImGui::NewLine();
+        ImGuiExt::TextFormattedWrapped("Bookmarks provide an easy way to mark important regions in your binary and quickly navigate to them later. You can also name them, add further information through comments or change their color.");
+        ImGui::NewLine();
+        ImGuiExt::TextFormattedWrapped(
+            "To create a Bookmark, select a byte region in the Hex Editor view and use the {} option in the {} menu or use the shortcut '{}'.",
+            "hex.builtin.menu.edit.bookmark.create"_lang, "hex.builtin.menu.edit"_lang,
+            ShortcutManager::getShortcutByName(
+                { "hex.builtin.menu.edit", "hex.builtin.menu.edit.bookmark.create" },
+                ContentRegistry::Views::getViewByName("hex.builtin.view.hex_editor.name")
+            ).toString()
+        );
+    }
 }

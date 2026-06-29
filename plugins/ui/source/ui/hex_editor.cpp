@@ -315,9 +315,16 @@ namespace hex::ui {
                 ImGui::GetWindowScrollbarID(window, axis),
                 axis,
                 &m_scrollPosition.get(),
-                (std::ceil(innerRect.Max.y - innerRect.Min.y) / characterSize.y),
-                std::nextafterf((numRows - m_visibleRowCount) + ImGui::GetWindowSize().y / characterSize.y, std::numeric_limits<float>::max()),
+                static_cast<ImS64>(std::ceil(innerRect.Max.y - innerRect.Min.y) / characterSize.y),
+                static_cast<ImS64>(std::nextafterf(static_cast<float>(numRows) + (ImGui::GetWindowSize().y / characterSize.y), std::numeric_limits<float>::max())),
                 roundingCorners);
+
+            if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                ImGui::OpenPopup("MiniMapOptions");
+            }
+
+            drawMinimapPopup();
+
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(3);
             ImGui::PopID();
@@ -339,7 +346,13 @@ namespace hex::ui {
 
             const auto cellSize = rowSize / ImVec2(rowColors.size(), 1);
             ImVec2 cellPos = rowStart;
-            for (const auto &rowColor : rowColors) {
+            const auto stride = bytesPerRow / rowColors.size();
+            for (u32 i = 0; i < rowColors.size(); i += 1) {
+                auto rowColor = rowColors[i];
+                if (m_minimapValueBrightness) {
+                    rowColor = ImColor(rowColor.Value + ImVec4(0.3F, 0.3F, 0.3F, 0.0F) * ((float(rowData[i * stride]) - 0x7F) / 0xFF));
+                }
+
                 drawList->AddRectFilled(cellPos, cellPos + cellSize, rowColor);
                 cellPos.x += cellSize.x;
             }
@@ -369,7 +382,7 @@ namespace hex::ui {
 
         if (m_editingAddress != address || m_editingCellType != cellType) {
             if (cellType == CellType::Hex) {
-                std::array<u8, 32> buffer;
+                std::array<u8, 32> buffer = {};
                 std::memcpy(buffer.data(), data, std::min(size, buffer.size()));
 
                 if (m_dataVisualizerEndianness != std::endian::native)
@@ -385,17 +398,10 @@ namespace hex::ui {
             if (hovered && m_provider->isWritable()) {
                 // Enter editing mode when double-clicking a cell
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    m_editingAddress = address;
-                    m_shouldModifyValue = false;
-                    m_enteredEditingMode = true;
+                    setEditingAddress(address);
 
-                    m_editingBytes.resize(size);
-                    if (m_mode == Mode::Overwrite)
-                        std::memcpy(m_editingBytes.data(), data, size);
-                    else if (m_mode == Mode::Insert) {
-                        std::memset(m_editingBytes.data(), 0x00, size);
+                    if (m_mode == Mode::Insert) {
                         std::memset(data, 0x00, size);
-                        m_provider->insert(address, size);
                     }
 
                     m_editingCellType = cellType;
@@ -549,7 +555,7 @@ namespace hex::ui {
 
         if (!this->isSelectionValid()) return;
 
-        if (!Region { byteAddress, 1 }.isWithin(region))
+        if (!Region { .address=byteAddress, .size=1 }.isWithin(region))
             return;
 
         // Draw vertical line at the left of first byte and the start of the line
@@ -575,7 +581,7 @@ namespace hex::ui {
 
         if (!this->isSelectionValid()) return;
 
-        if (!Region { byteAddress, 1 }.isWithin(region))
+        if (!Region { .address=byteAddress, .size=1 }.isWithin(region))
             return;
 
         bool cursorVisible = (!ImGui::GetIO().ConfigInputTextCursorBlink) || (m_cursorBlinkTimer <= 0.0F) || std::fmod(m_cursorBlinkTimer, 1.20F) <= 0.80F;
@@ -639,12 +645,24 @@ namespace hex::ui {
                 ImGui::TableSetupScrollFreeze(0, 2);
 
                 // Row address column
+                u64 maxAddress = std::numeric_limits<u64>::max();
+                
+                if (m_provider != nullptr) {
+                    maxAddress = m_provider->getActualSize();
+                    if (maxAddress > 0)
+                        maxAddress--;
+                    if ((m_scrollPosition + m_visibleRowCount) * bytesPerRow < maxAddress)
+                        maxAddress = (m_scrollPosition + m_visibleRowCount) * bytesPerRow;
+
+                    if (maxAddress + m_provider->getCurrentPageAddress() < std::numeric_limits<u64>::max() - m_provider->getBaseAddress())
+                        maxAddress += m_provider->getBaseAddress() + m_provider->getCurrentPageAddress();
+                    else
+                        maxAddress = std::numeric_limits<u64>::max();
+                }
+
                 ImGui::TableSetupColumn("hex.ui.common.address"_lang, ImGuiTableColumnFlags_WidthFixed,
                     m_provider == nullptr ? 0 :
-                    CharacterSize.x * std::max(
-                        fmt::formatted_size("{:08X}: ", ((m_scrollPosition + m_visibleRowCount) * bytesPerRow) + m_provider->getBaseAddress() + m_provider->getCurrentPageAddress()),
-                        m_separatorStride == 0 ? 0 : fmt::formatted_size("{} {}", "hex.ui.common.segment"_lang, (m_scrollPosition + m_visibleRowCount) * bytesPerRow + m_provider->getBaseAddress() + m_provider->getCurrentPageAddress() / m_separatorStride)
-                    )
+                    CharacterSize.x * std::max(fmt::formatted_size("{:08X}: ", maxAddress),m_separatorStride == 0 ? 0 : fmt::formatted_size("{} {}", "hex.ui.common.segment"_lang, maxAddress / m_separatorStride))
                 );
                 ImGui::TableSetupColumn("");
 
@@ -688,7 +706,7 @@ namespace hex::ui {
                 if (m_provider != nullptr && m_provider->isReadable()) {
                     const auto isCurrRegionValid = [this](u64 address) {
                         auto &[currRegion, currRegionValid] = m_currValidRegion;
-                        if (!Region{ address, 1 }.isWithin(currRegion)) {
+                        if (!Region{ .address=address, .size=1 }.isWithin(currRegion)) {
                             m_currValidRegion = m_provider->getRegionValidity(address);
                         }
 
@@ -776,6 +794,7 @@ namespace hex::ui {
                         auto byteCellSize = (CharacterSize * ImVec2(maxCharsPerCell, 1)) + (ImVec2(2, 2) * ImGui::GetStyle().CellPadding) + scaled(ImVec2(1 + m_byteCellPadding, 0));
                         byteCellSize = ImVec2(std::ceil(byteCellSize.x), std::ceil(byteCellSize.y));
 
+                        std::optional<float> prevEndPosX;
                         for (u64 x = 0; x < columnCount; x++) {
                             const u64 byteAddress = y * bytesPerRow + x * bytesPerCell + m_provider->getBaseAddress() + m_provider->getCurrentPageAddress();
 
@@ -788,13 +807,14 @@ namespace hex::ui {
 
                             if (x < std::ceil(float(validBytes) / bytesPerCell)) {
                                 auto cellStartPos = getCellPosition();
+
                                 auto [foregroundColor, backgroundColor] = cellColors[x];
 
                                 auto adjustedCellSize = byteCellSize;
                                 if (isColumnSeparatorColumn(x + 1, columnCount) && cellColors.size() > x + 1) {
                                     auto separatorAddress = x + y * columnCount;
                                     auto [nextForegroundColor, nextBackgroundColor] = cellColors[x + 1];
-                                    if ((isSelectionValid() && getSelection().overlaps({ separatorAddress, 1 }) && getSelection().getEndAddress() != separatorAddress) || backgroundColor == nextBackgroundColor)
+                                    if ((isSelectionValid() && getSelection().overlaps({ .address=separatorAddress, .size=1 }) && getSelection().getEndAddress() != separatorAddress) || backgroundColor == nextBackgroundColor)
                                         adjustedCellSize.x += SeparatorColumWidth + 1;
                                 }
 
@@ -802,6 +822,13 @@ namespace hex::ui {
                                     adjustedCellSize.y -= (ImGui::GetStyle().CellPadding.y);
 
                                 backgroundColor = applySelectionColor(byteAddress, backgroundColor);
+
+                                if (prevEndPosX.has_value()) {
+                                    adjustedCellSize.x += cellStartPos.x - prevEndPosX.value();
+                                    cellStartPos.x = prevEndPosX.value();
+                                }
+
+                                prevEndPosX = cellStartPos.x + adjustedCellSize.x;
 
                                 // Draw highlights and selection
                                 if (backgroundColor.has_value()) {
@@ -831,7 +858,7 @@ namespace hex::ui {
                                     ImGuiExt::TextFormatted("{:?>{}}", "", maxCharsPerCell);
 
                                 if (cellHovered) {
-                                    Region newHoveredCell = { byteAddress, bytesPerCell };
+                                    Region newHoveredCell = { .address=byteAddress, .size=bytesPerCell };
                                     if (hoveredCell != newHoveredCell) {
                                         hoveredCell = newHoveredCell;
                                     }
@@ -897,7 +924,7 @@ namespace hex::ui {
                                             this->drawCell(byteAddress, &bytes[x], 1, cellHovered, CellType::ASCII);
 
                                         if (cellHovered) {
-                                            Region newHoveredCell = { byteAddress, bytesPerCell };
+                                            Region newHoveredCell = { .address=byteAddress, .size=bytesPerCell };
                                             if (hoveredCell != newHoveredCell) {
                                                 hoveredCell = newHoveredCell;
                                             }
@@ -992,7 +1019,7 @@ namespace hex::ui {
                                             this->handleSelection(address, data.advance, &bytes[address % bytesPerRow], cellHovered);
 
                                             if (cellHovered) {
-                                                Region newHoveredCell = { address, data.advance };
+                                                Region newHoveredCell = { .address=address, .size=data.advance };
                                                 if (hoveredCell != newHoveredCell) {
                                                     hoveredCell = newHoveredCell;
                                                 }
@@ -1014,12 +1041,12 @@ namespace hex::ui {
                         if (m_shouldScrollToSelection && isSelectionValid()) {
                             // Make sure simply clicking on a byte at the edge of the screen won't cause scrolling
                             if ((ImGui::IsMouseDragging(ImGuiMouseButton_Left))) {
-                                if ((*m_selectionStart >= (*m_selectionEnd + bytesPerRow)) && y == (m_scrollPosition + 1)) {
+                                if (y == (m_scrollPosition + 1)) {
                                     if (i128(m_selectionEnd.value() - m_provider->getBaseAddress() - m_provider->getCurrentPageAddress()) <= (ImS64(m_scrollPosition + 1) * bytesPerRow)) {
                                         m_shouldScrollToSelection = false;
                                         m_scrollPosition -= 3;
                                     }
-                                } else if ((*m_selectionStart <= (*m_selectionEnd - bytesPerRow)) && y == ((m_scrollPosition + m_visibleRowCount) - 1)) {
+                                } else if (y == ((m_scrollPosition + m_visibleRowCount) - 1)) {
                                     if (i128(m_selectionEnd.value() - m_provider->getBaseAddress() - m_provider->getCurrentPageAddress()) >= (ImS64((m_scrollPosition + m_visibleRowCount) - 2) * bytesPerRow)) {
                                         m_shouldScrollToSelection = false;
                                         m_scrollPosition += 3;
@@ -1059,7 +1086,7 @@ namespace hex::ui {
                         // Check if the targetRowNumber is outside the current visible range
                         if (ImS64(targetRowNumber) < currentTopRow) {
                             // If target is above the current view, scroll just enough to bring it into view at the top
-                            m_scrollPosition = targetRowNumber + m_visibleRowCount * m_jumpPivot - 3;
+                            m_scrollPosition = targetRowNumber + ImS64(m_visibleRowCount * m_jumpPivot - 3);
                         } else if (ImS64(targetRowNumber) > currentBottomRow) {
                             // If target is below the current view, scroll just enough to bring it into view at the bottom
                             m_scrollPosition = targetRowNumber - 3;
@@ -1085,6 +1112,27 @@ namespace hex::ui {
         }
 
         m_shouldScrollToSelection = false;
+    }
+
+    void HexEditor::drawMinimapPopup() {
+        if (ImGui::BeginPopup("MiniMapOptions")) {
+            ImGui::SliderInt("hex.ui.hex_editor.minimap.width"_lang, &m_miniMapWidth, 1, 25, "%d", ImGuiSliderFlags_AlwaysClamp);
+
+            if (ImGui::BeginCombo("##minimap_visualizer", Lang(m_miniMapVisualizer->unlocalizedName))) {
+
+                for (const auto &visualizer : ContentRegistry::HexEditor::impl::getMiniMapVisualizers()) {
+                    if (ImGui::Selectable(Lang(visualizer->unlocalizedName))) {
+                        m_miniMapVisualizer = visualizer;
+                    }
+                }
+
+                ImGui::EndCombo();
+            }
+
+            ImGui::Checkbox("hex.ui.hex_editor.minimap.value_brightness"_lang, &m_minimapValueBrightness);
+
+            ImGui::EndPopup();
+        }
     }
 
     void HexEditor::drawFooter(const ImVec2 &size) {
@@ -1152,27 +1200,12 @@ namespace hex::ui {
                         if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && m_miniMapVisualizer != nullptr)
                             ImGui::OpenPopup("MiniMapOptions");
 
-                        if (ImGui::BeginPopup("MiniMapOptions")) {
-                            ImGui::SliderInt("hex.ui.hex_editor.minimap.width"_lang, &m_miniMapWidth, 1, 25, "%d", ImGuiSliderFlags_AlwaysClamp);
+                        drawMinimapPopup();
 
-                            if (ImGui::BeginCombo("##minimap_visualizer", Lang(m_miniMapVisualizer->unlocalizedName))) {
-
-                                for (const auto &visualizer : ContentRegistry::HexEditor::impl::getMiniMapVisualizers()) {
-                                    if (ImGui::Selectable(Lang(visualizer->unlocalizedName))) {
-                                        m_miniMapVisualizer = visualizer;
-                                    }
-                                }
-
-                                ImGui::EndCombo();
-                            }
-
-                            ImGui::EndPopup();
-                        }
-
-                        ImGui::SameLine(0, 1_scaled);
+                        ImGui::SameLine();
 
                         // Data Cell configuration
-                        if (ImGuiExt::DimmedIconButton(ICON_VS_TABLE, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
+                        if (ImGuiExt::DimmedIconButton(ICON_VS_SETTINGS_GEAR, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
                             ImGui::OpenPopup("DataCellOptions");
                         }
                         ImGuiExt::InfoTooltip("hex.ui.hex_editor.data_cell_options"_lang);

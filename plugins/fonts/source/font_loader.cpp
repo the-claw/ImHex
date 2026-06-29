@@ -24,6 +24,9 @@ namespace hex::fonts::loader {
         ImFontConfig config;
         config.MergeMode = false;
         config.SizePixels = settings.getFontSize() / ImHexApi::System::getNativeScale();
+        config.OversampleH = 3;
+        config.OversampleV = 2;
+        config.RasterizerDensity = ImHexApi::System::getNativeScale();
         config.Flags |= ImFontFlags_NoLoadError;
 
         std::memcpy(config.Name, name.get().c_str(), std::min(name.get().size(), sizeof(config.Name) - 1));
@@ -83,6 +86,9 @@ namespace hex::fonts::loader {
 
         config.MergeMode = true;
         for (auto &extraFont : ImHexApi::Fonts::impl::getMergeFonts()) {
+            config.OversampleH = 2;
+            config.OversampleV = 1;
+            config.RasterizerDensity = 2;
             config.GlyphOffset = { extraFont.offset.x, -extraFont.offset.y };
             config.SizePixels = settings.getFontSize() * extraFont.fontSizeMultiplier.value_or(1) / ImHexApi::System::getNativeScale();
             atlas->AddFontFromMemoryTTF(const_cast<u8 *>(extraFont.fontData.data()), extraFont.fontData.size(), 0.0F, &config);

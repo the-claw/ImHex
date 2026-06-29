@@ -1,5 +1,6 @@
 #include "content/views/view_data_inspector.hpp"
 
+#include <algorithm>
 #include <hex/api/achievement_manager.hpp>
 #include <hex/api/content_registry/settings.hpp>
 #include <hex/providers/provider.hpp>
@@ -21,9 +22,11 @@
 
 #include <ranges>
 #include <fonts/tabler_icons.hpp>
+#include <ui/widgets.hpp>
 
 namespace hex::plugin::builtin {
 
+    static ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.general", "hex.builtin.setting.general.data_inspector_exact_size_only"> onlyShowExactSizeMatchEntries = false;
     using NumberDisplayStyle = ContentRegistry::DataInspector::NumberDisplayStyle;
 
     ViewDataInspector::ViewDataInspector() : View::Window("hex.builtin.view.data_inspector.name", ICON_VS_INSPECT) {
@@ -32,11 +35,10 @@ namespace hex::plugin::builtin {
             // Save current selection
             if (!ImHexApi::Provider::isValid() || region == Region::Invalid()) {
                 m_validBytes = 0;
-                m_selectedProvider = nullptr;
+                m_selectedRegion = { Region::Invalid(), nullptr };
             } else {
                 m_validBytes   = u64((region.getProvider()->getBaseAddress() + region.getProvider()->getActualSize()) - region.address);
-                m_startAddress = region.address;
-                m_selectedProvider = region.getProvider();
+                m_selectedRegion = region;
             }
 
             // Invalidate inspector rows
@@ -44,17 +46,23 @@ namespace hex::plugin::builtin {
         });
 
         EventDataChanged::subscribe(this, [this](const auto &provider) {
-            if (provider == m_selectedProvider)
+            if (provider == m_selectedRegion.getProvider())
                 m_shouldInvalidate = true;
         });
 
         EventProviderClosed::subscribe(this, [this](const auto*) {
-            m_selectedProvider = nullptr;
+            m_selectedRegion = { Region::Invalid(), nullptr };
         });
 
         ContentRegistry::Settings::onChange("hex.builtin.setting.data_inspector", "hex.builtin.setting.data_inspector.hidden_rows", [this](const ContentRegistry::Settings::SettingsValue &value) {
             auto filterValues = value.get<std::vector<std::string>>({});
             m_hiddenValues = std::set(filterValues.begin(), filterValues.end());
+        });
+
+        ShortcutManager::addShortcut(this, CTRLCMD + Keys::E, "hex.builtin.view.data_inspector.toggle_endianness", [this] {
+            if (m_endian == std::endian::little) m_endian = std::endian::big;
+            else m_endian = std::endian::little;
+            m_shouldInvalidate = true;
         });
     }
 
@@ -69,26 +77,56 @@ namespace hex::plugin::builtin {
         });
     }
 
+    static u8 reverseBits(u8 byte) {
+        byte = (byte & 0xF0) >> 4 | (byte & 0x0F) << 4;
+        byte = (byte & 0xCC) >> 2 | (byte & 0x33) << 2;
+        byte = (byte & 0xAA) >> 1 | (byte & 0x55) << 1;
+        return byte;
+    }
+
+    void ViewDataInspector::preprocessBytes(std::span<u8> data) {
+        // Handle invert setting
+        if (m_invert) {
+            for (auto &byte : data)
+                byte ^= 0xFF;
+        }
+
+        // Handle reverse setting
+        if (m_reverse) {
+            for (auto &byte : data)
+                byte = reverseBits(byte);
+        }
+    }
+
     void ViewDataInspector::updateInspectorRowsTask() {
         m_workData.clear();
 
-        if (m_selectedProvider == nullptr)
+        if (m_selectedRegion.getProvider() == nullptr)
             return;
 
         // Decode bytes using registered inspectors
-        for (auto &entry : ContentRegistry::DataInspector::impl::getEntries()) {
+        for (const auto &entry : ContentRegistry::DataInspector::impl::getEntries()) {
             if (m_validBytes < entry.requiredSize)
                 continue;
 
+            // If the setting is enabled, skip all entries that don't match the exact selection size
+            if (onlyShowExactSizeMatchEntries) {
+                const auto selectedBytes = m_selectedRegion.getSize();
+
+                if (entry.requiredSize != entry.maxSize) {
+                    if (selectedBytes < entry.requiredSize || selectedBytes > entry.maxSize)
+                        continue;
+                } else {
+                    if (selectedBytes != entry.requiredSize)
+                        continue;
+                }
+            }
+
             // Try to read as many bytes as requested and possible
             std::vector<u8> buffer(m_validBytes > entry.maxSize ? entry.maxSize : m_validBytes);
-            m_selectedProvider->read(m_startAddress, buffer.data(), buffer.size());
+            m_selectedRegion.getProvider()->read(m_selectedRegion.getStartAddress(), buffer.data(), buffer.size());
 
-            // Handle invert setting
-            if (m_invert) {
-                for (auto &byte : buffer)
-                    byte ^= 0xFF;
-            }
+            preprocessBytes(buffer);
 
             // Insert processed data into the inspector list
             m_workData.emplace_back(
@@ -108,13 +146,9 @@ namespace hex::plugin::builtin {
     }
 
     void ViewDataInspector::inspectorReadFunction(u64 offset, u8 *buffer, size_t size) {
-        m_selectedProvider->read(offset, buffer, size);
+        m_selectedRegion.getProvider()->read(offset, buffer, size);
 
-        // Handle invert setting
-        if (m_invert) {
-            for (auto &byte : std::span(buffer, size))
-                byte ^= 0xFF;
-        }
+        preprocessBytes({ buffer, size });
     }
 
     void ViewDataInspector::executeInspectors() {
@@ -123,11 +157,13 @@ namespace hex::plugin::builtin {
                 { "numberDisplayStyle", u128(u64(m_numberDisplayStyle)) }
         };
 
+        const auto provider = m_selectedRegion.getProvider();
+
         // Setup a new pattern language runtime
-        ContentRegistry::PatternLanguage::configureRuntime(m_runtime, m_selectedProvider);
+        ContentRegistry::PatternLanguage::configureRuntime(m_runtime, provider);
 
         // Setup the runtime to read from the selected provider
-        m_runtime.setDataSource(m_selectedProvider->getBaseAddress(), m_selectedProvider->getActualSize(), [this](u64 offset, u8 *buffer, size_t size) {
+        m_runtime.setDataSource(provider->getBaseAddress(), provider->getActualSize(), [this](u64 offset, u8 *buffer, size_t size) {
             this->inspectorReadFunction(offset, buffer, size);
         });
 
@@ -138,7 +174,7 @@ namespace hex::plugin::builtin {
         m_runtime.setDefaultEndian(m_endian);
 
         // Set start address to the selected address
-        m_runtime.setStartAddress(m_startAddress);
+        m_runtime.setStartAddress(m_selectedRegion.getStartAddress());
 
         // Loop over all files in the inspectors folder and execute them
         for (const auto &folderPath : paths::Inspectors.read()) {
@@ -162,9 +198,9 @@ namespace hex::plugin::builtin {
     }
 
     void ViewDataInspector::executeInspector(const std::string& code, const std::fs::path& path, const std::map<std::string, pl::core::Token::Literal>& inVariables) {
-        if (!m_runtime.executeString(code, pl::api::Source::DefaultSource, {}, inVariables, true)) {
+        if (m_runtime.executeString(code, pl::api::Source::DefaultSource, {}, inVariables, true) != 0) {
 
-            auto displayFunction = createPatternErrorDisplayFunction();
+            auto displayFunction = createPatternErrorDisplayFunction(path);
 
             // Insert the inspector containing the error message into the list
             m_workData.emplace_back(
@@ -191,8 +227,7 @@ namespace hex::plugin::builtin {
             // Set up the editing function if a write formatter is available
             std::optional<ContentRegistry::DataInspector::impl::EditingFunction> editingFunction;
             if (!pattern->getWriteFormatterFunction().empty()) {
-                editingFunction = [&pattern](const std::string &value,
-                                                                  std::endian) -> std::vector<u8> {
+                editingFunction = ContentRegistry::DataInspector::EditWidget::TextInput([&pattern](const std::string &value, std::endian) -> std::vector<u8> {
                     try {
                         pattern->setValue(value);
                     } catch (const pl::core::err::EvaluatorError::Exception &error) {
@@ -201,12 +236,18 @@ namespace hex::plugin::builtin {
                     }
 
                     return {};
-                };
+                });
             }
 
             try {
                 // Set up the display function using the pattern's formatter
-                auto displayFunction = [pattern,value = pattern->getFormattedValue()] {
+                auto displayFunction = [pattern, value = pattern->getFormattedValue(), path] {
+                    ContentRegistry::DataInspector::drawMenuItems([&] {
+                        if (ImGui::MenuItemEx("hex.builtin.view.data_inspector.open_pattern"_lang, ICON_VS_FOLDER_OPENED)) {
+                            fs::openFileExternal(path);
+                        }
+                    });
+
                     auto drawer = ui::VisualizerDrawer();
                     if (const auto &inlineVisualizeArgs = pattern->getAttributeArguments("hex::inline_visualize"); !inlineVisualizeArgs.empty()) {
                         drawer.drawVisualizer(ContentRegistry::PatternLanguage::impl::getInlineVisualizers(), inlineVisualizeArgs, *pattern, true);
@@ -229,7 +270,7 @@ namespace hex::plugin::builtin {
                 AchievementManager::unlockAchievement("hex.builtin.achievement.patterns",
                                                       "hex.builtin.achievement.patterns.data_inspector.name");
             } catch (const pl::core::err::EvaluatorError::Exception &) {
-                auto displayFunction = createPatternErrorDisplayFunction();
+                auto displayFunction = createPatternErrorDisplayFunction(path);
 
                 // Insert the inspector containing the error message into the list
                 m_workData.emplace_back(
@@ -256,34 +297,32 @@ namespace hex::plugin::builtin {
             this->updateInspectorRows();
         }
 
-        if (m_selectedProvider == nullptr || !m_selectedProvider->isReadable() || m_validBytes <= 0) {
-            ImGuiExt::TextOverlay("hex.builtin.view.data_inspector.no_data"_lang, ImGui::GetWindowPos() + ImGui::GetWindowSize() / 2, ImGui::GetWindowWidth() * 0.7);
-
-            return;
-        }
-
         const auto selection = ImHexApi::HexEditor::getSelection();
-        const auto selectedEntryIt = std::find_if(m_cachedData.begin(), m_cachedData.end(), [this](const InspectorCacheEntry &entry) {
+        const auto selectedEntryIt = std::ranges::find_if(m_cachedData, [this](const InspectorCacheEntry &entry) {
             return entry.unlocalizedName == m_selectedEntryName;
         });
 
         u64 requiredSize = selectedEntryIt == m_cachedData.end() ? 0x00 : selectedEntryIt->requiredSize;
 
-        ImGui::BeginDisabled(!selection.has_value() || !m_selectedEntryName.has_value());
+        const auto provider = m_selectedRegion.getProvider();
+
+        bool noData = provider == nullptr || !provider->isReadable() || m_validBytes <= 0;
+
+        ImGui::BeginDisabled(noData || !selection.has_value() || !m_selectedEntryName.has_value());
         {
             const auto buttonSizeSmall = ImVec2(ImGui::GetTextLineHeightWithSpacing() * 1.5F, 0);
             const auto buttonSize = ImVec2((ImGui::GetContentRegionAvail().x / 2) - buttonSizeSmall.x - ImGui::GetStyle().FramePadding.x * 3, 0);
-            const auto baseAddress = m_selectedProvider->getBaseAddress();
-            const auto providerSize = m_selectedProvider->getActualSize();
+            const auto baseAddress = noData ? 0x00 : provider->getBaseAddress();
+            const auto providerSize = noData ? 0x00 : provider->getActualSize();
             const auto providerEndAddress = baseAddress + providerSize;
 
             ImGui::BeginDisabled(!selection.has_value() || providerSize < requiredSize || selection->getStartAddress() < baseAddress + requiredSize);
             if (ImGuiExt::DimmedIconButton(ICON_TA_CHEVRON_LEFT_PIPE, ImGui::GetStyleColorVec4(ImGuiCol_Text), buttonSizeSmall)) {
-                ImHexApi::HexEditor::setSelection(Region { selection->getStartAddress() % requiredSize, requiredSize });
+                ImHexApi::HexEditor::setSelection(Region { .address=selection->getStartAddress() % requiredSize, .size=requiredSize });
             }
             ImGui::SameLine();
             if (ImGuiExt::DimmedIconButton(ICON_TA_CHEVRON_LEFT, ImGui::GetStyleColorVec4(ImGuiCol_Text), buttonSize)) {
-                ImHexApi::HexEditor::setSelection(Region { selection->getStartAddress() - requiredSize, requiredSize });
+                ImHexApi::HexEditor::setSelection(Region { .address=selection->getStartAddress() - requiredSize, .size=requiredSize });
             }
             ImGui::EndDisabled();
 
@@ -291,11 +330,11 @@ namespace hex::plugin::builtin {
 
             ImGui::BeginDisabled(!selection.has_value() || providerSize < requiredSize || selection->getEndAddress() >= providerEndAddress - requiredSize);
             if (ImGuiExt::DimmedIconButton(ICON_TA_CHEVRON_RIGHT, ImGui::GetStyleColorVec4(ImGuiCol_Text), buttonSize)) {
-                ImHexApi::HexEditor::setSelection(Region { selection->getStartAddress() + requiredSize, requiredSize });
+                ImHexApi::HexEditor::setSelection(Region { .address=selection->getStartAddress() + requiredSize, .size=requiredSize });
             }
             ImGui::SameLine();
             if (ImGuiExt::DimmedIconButton(ICON_TA_CHEVRON_RIGHT_PIPE, ImGui::GetStyleColorVec4(ImGuiCol_Text), buttonSizeSmall)) {
-                ImHexApi::HexEditor::setSelection(Region { providerEndAddress - selection->getStartAddress() % requiredSize - requiredSize, requiredSize });
+                ImHexApi::HexEditor::setSelection(Region { .address=providerEndAddress - selection->getStartAddress() % requiredSize - requiredSize, .size=requiredSize });
             }
             ImGui::EndDisabled();
         }
@@ -303,29 +342,32 @@ namespace hex::plugin::builtin {
 
         static bool hideSettings = true;
 
-        if (ImGui::BeginTable("##datainspector", m_tableEditingModeEnabled ? 3 : 2,
+        if (ImGui::BeginTable("##datainspector", noData ? 1 : (m_tableEditingModeEnabled ? 3 : 2),
                               ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
-                              ImVec2(0, ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * (hideSettings ? 1.5 : 7.5)))) {
-            ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableSetupColumn("hex.builtin.view.data_inspector.table.name"_lang,
-                                    ImGuiTableColumnFlags_WidthFixed);
-            ImGui::TableSetupColumn("hex.builtin.view.data_inspector.table.value"_lang,
-                                    ImGuiTableColumnFlags_WidthStretch);
+                              ImVec2(0, ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * (hideSettings ? 1.25 : 7.25)))) {
+            if (noData) {
+                ImGuiExt::TextOverlay("hex.builtin.view.data_inspector.no_data"_lang, ImGui::GetWindowPos() + ImGui::GetWindowSize() / 2, ImGui::GetWindowWidth() * 0.7);
+            } else {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("hex.builtin.view.data_inspector.table.name"_lang,
+                                        ImGuiTableColumnFlags_WidthFixed);
+                ImGui::TableSetupColumn("hex.builtin.view.data_inspector.table.value"_lang,
+                                        ImGuiTableColumnFlags_WidthStretch);
 
-            if (m_tableEditingModeEnabled)
-                ImGui::TableSetupColumn("##favorite", ImGuiTableColumnFlags_WidthFixed, ImGui::GetTextLineHeight());
+                if (m_tableEditingModeEnabled)
+                    ImGui::TableSetupColumn("##editing", ImGuiTableColumnFlags_WidthFixed, ImGui::GetTextLineHeight());
 
-            ImGui::TableHeadersRow();
+                ImGui::TableHeadersRow();
 
-            this->drawInspectorRows();
-
-            if (m_tableEditingModeEnabled) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TableNextColumn();
-                ImGuiExt::HelpHover("hex.builtin.view.data_inspector.custom_row.hint"_lang, ICON_VS_INFO);
-                ImGui::SameLine();
-                ImGui::TextUnformatted("hex.builtin.view.data_inspector.custom_row.title"_lang);
+                this->drawInspectorRows();
+                if (m_tableEditingModeEnabled) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TableNextColumn();
+                    ImGuiExt::HelpHover("hex.builtin.view.data_inspector.custom_row.hint"_lang, ICON_VS_INFO);
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted("hex.builtin.view.data_inspector.custom_row.title"_lang);
+                }
             }
 
             ImGui::EndTable();
@@ -334,7 +376,10 @@ namespace hex::plugin::builtin {
         // Draw inspector settings
         const auto width = ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(ICON_VS_EDIT).x - ImGui::GetStyle().ItemSpacing.x * 2;
         if (ImGuiExt::BeginSubWindow("hex.ui.common.settings"_lang, &hideSettings, hideSettings ? ImVec2(width, 1) : ImVec2(0, 0))) {
+            ImGui::BeginDisabled(noData);
             ImGuiExt::DimmedButtonToggle(fmt::format("{}  {}", ICON_VS_EDIT, "hex.ui.common.edit"_lang).c_str(), &m_tableEditingModeEnabled, ImVec2(-1, 0));
+            ImGui::EndDisabled();
+
             ImGui::Separator();
 
             ImGui::PushItemWidth(-1);
@@ -345,8 +390,12 @@ namespace hex::plugin::builtin {
                 // Draw radix setting
                 this->drawRadixSetting();
 
-                // Draw invert setting
+                // Draw invert and reverse setting
+                ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x / 2 - ImGui::GetStyle().ItemSpacing.x / 2);
                 this->drawInvertSetting();
+                ImGui::SameLine();
+                this->drawReverseSetting();
+                ImGui::PopItemWidth();
             }
             ImGui::PopItemWidth();
         }
@@ -354,7 +403,9 @@ namespace hex::plugin::builtin {
 
         if (hideSettings) {
             ImGui::SameLine();
+            ImGui::BeginDisabled(noData);
             ImGuiExt::DimmedButtonToggle(ICON_VS_EDIT, &m_tableEditingModeEnabled);
+            ImGui::EndDisabled();
             ImGui::SetItemTooltip("%s", "hex.ui.common.edit"_lang.get());
         }
     }
@@ -430,15 +481,19 @@ namespace hex::plugin::builtin {
             ImGui::SameLine();
 
             // Handle copying the value to the clipboard when clicking the row
-            if (ImGui::Selectable("##InspectorLine", m_selectedEntryName == entry.unlocalizedName, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
+            if (ImGui::Selectable("##InspectorLine", m_selectedEntryName == entry.unlocalizedName, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap | ImGuiSelectableFlags_AllowDoubleClick)) {
                 m_selectedEntryName = entry.unlocalizedName;
-                if (auto selection = ImHexApi::HexEditor::getSelection(); selection.has_value()) {
-                    ImHexApi::HexEditor::setSelection(Region { selection->getStartAddress(), entry.requiredSize });
+                if (auto selection = ImHexApi::HexEditor::getSelection(); selection.has_value() && entry.requiredSize > 0) {
+                    ImHexApi::HexEditor::setSelection(Region { .address=selection->getStartAddress(), .size=entry.requiredSize });
                 }
             }
 
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                m_selectedEntryName.reset();
+            }
+
             // Enter editing mode when double-clicking the row
-            const bool editable = entry.editingFunction.has_value() && m_selectedProvider->isWritable();
+            const bool editable = entry.editingFunction.has_value() && m_selectedRegion.getProvider()->isWritable();
             if (ImGui::IsItemHovered()) {
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && editable) {
                     entry.editing = true;
@@ -461,73 +516,46 @@ namespace hex::plugin::builtin {
                 }
                 ImGui::EndPopup();
             }
+        } else {
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                entry.editing = false;
+            }
 
-            return;
+            // Handle editing mode
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SetKeyboardFocusHere();
+
+            // Draw editing widget and capture edited value
+            auto bytes = (*entry.editingFunction)(m_editingValue, m_endian, {});
+            if (bytes.has_value()) {
+                preprocessBytes(*bytes);
+
+                // Write those bytes to the selected provider at the current address
+                m_selectedRegion.getProvider()->write(m_selectedRegion.getStartAddress(), bytes->data(), bytes->size());
+
+                // Disable editing mode
+                m_editingValue.clear();
+                entry.editing = false;
+
+                // Reload all inspector rows
+                m_shouldInvalidate = true;
+            }
+
+            ImGui::PopStyleVar();
+
+            // Disable editing mode when clicking outside the input text box
+            if (!ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                m_editingValue.clear();
+                entry.editing = false;
+            }
         }
 
-        // Handle editing mode
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-        ImGui::SetNextItemWidth(-1);
-        ImGui::SetKeyboardFocusHere();
-
-        // Draw input text box
-        if (ImGui::InputText("##InspectorLineEditing", m_editingValue,
-                             ImGuiInputTextFlags_EnterReturnsTrue |
-                             ImGuiInputTextFlags_AutoSelectAll)) {
-            // Turn the entered value into bytes
-            auto bytes = entry.editingFunction.value()(m_editingValue, m_endian);
-
-            if (m_invert)
-                std::ranges::transform(bytes, bytes.begin(), [](auto byte) { return byte ^ 0xFF; });
-
-            // Write those bytes to the selected provider at the current address
-            m_selectedProvider->write(m_startAddress, bytes.data(), bytes.size());
-
-            // Disable editing mode
-            m_editingValue.clear();
-            entry.editing = false;
-
-            // Reload all inspector rows
-            m_shouldInvalidate = true;
-        }
-
-        ImGui::PopStyleVar();
-
-        // Disable editing mode when clicking outside the input text box
-        if (!ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            m_editingValue.clear();
-            entry.editing = false;
-        }
     }
 
     void ViewDataInspector::drawEndianSetting() {
-        int selection = [this] {
-            switch (m_endian) {
-                default:
-                case std::endian::little:
-                    return 0;
-                case std::endian::big:
-                    return 1;
-            }
-        }();
-
-        std::array options = {
-            fmt::format("{}:  {}", "hex.ui.common.endian"_lang, "hex.ui.common.little"_lang),
-            fmt::format("{}:  {}", "hex.ui.common.endian"_lang, "hex.ui.common.big"_lang)
-        };
-
-        if (ImGui::SliderInt("##endian", &selection, 0, options.size() - 1, options[selection].c_str(), ImGuiSliderFlags_NoInput)) {
+        if (ui::endiannessSlider(m_endian)) {
             m_shouldInvalidate = true;
-
-            switch (selection) {
-                default:
-                case 0:
-                    m_endian = std::endian::little;
-                    break;
-                case 1:
-                    m_endian = std::endian::big;
-                    break;
-            }
         }
     }
 
@@ -583,7 +611,22 @@ namespace hex::plugin::builtin {
         }
     }
 
-    ContentRegistry::DataInspector::impl::DisplayFunction ViewDataInspector::createPatternErrorDisplayFunction() {
+    void ViewDataInspector::drawReverseSetting() {
+        int selection = m_reverse ? 1 : 0;
+
+        std::array options = {
+            fmt::format("{}:  {}", "hex.builtin.view.data_inspector.reverse"_lang, "hex.ui.common.no"_lang),
+            fmt::format("{}:  {}", "hex.builtin.view.data_inspector.reverse"_lang, "hex.ui.common.yes"_lang)
+        };
+
+        if (ImGui::SliderInt("##reverse", &selection, 0, options.size() - 1, options[selection].c_str(), ImGuiSliderFlags_NoInput)) {
+            m_shouldInvalidate = true;
+
+            m_reverse = selection == 1;
+        }
+    }
+
+    ContentRegistry::DataInspector::impl::DisplayFunction ViewDataInspector::createPatternErrorDisplayFunction(const std::fs::path &path) {
         // Generate error message
         std::string errorMessage;
         if (const auto &compileErrors = m_runtime.getCompileErrors(); !compileErrors.empty()) {
@@ -595,7 +638,13 @@ namespace hex::plugin::builtin {
         }
 
         // Create a dummy display function that displays the error message
-        auto displayFunction = [errorMessage = std::move(errorMessage)] {
+        auto displayFunction = [errorMessage = std::move(errorMessage), path] {
+            ContentRegistry::DataInspector::drawMenuItems([&, path] {
+                if (ImGui::MenuItemEx("hex.builtin.view.data_inspector.open_pattern"_lang, ICON_VS_FOLDER_OPENED)) {
+                    fs::openFileExternal(path);
+                }
+            });
+
             ImGuiExt::HelpHover(
                 errorMessage.c_str(),
                 "hex.builtin.view.data_inspector.execution_error"_lang,
@@ -608,5 +657,13 @@ namespace hex::plugin::builtin {
         return displayFunction;
     }
 
+    void ViewDataInspector::drawHelpText() {
+        ImGuiExt::TextFormattedWrapped("This view decodes bytes, starting from the currently selected address in the Hex Editor View, as various different data types.");
+        ImGui::NewLine();
+        ImGuiExt::TextFormattedWrapped("The decoding here may or may not make sense depending on the actual data at the selected address but it can give a rough idea of what kind of data is present. If certain types make no sense, they can be hidden by entering the editing mode (pencil icon) and clicking the eye icon next to the corresponding row.");
+        ImGui::NewLine();
+        ImGuiExt::TextFormattedWrapped("By clicking on a row, the corresponding bytes will be selected in the Hex Editor View and you can use the navigation buttons at the top to move to the next or previous value, assuming you're dealing with a list of such values.");
+        ImGuiExt::TextFormattedWrapped("Double-clicking a row (if editable) will allow you to change the value and write it back to the underlying data. Some types may also have additional options available in the context menu (right-click on a row).");
+    }
 
 }

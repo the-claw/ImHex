@@ -3,6 +3,7 @@
 #include <hex/api/imhex_api/system.hpp>
 #include <hex/api/localization_manager.hpp>
 #include <hex/api/task_manager.hpp>
+#include <hex/api/tutorial_manager.hpp>
 
 #include <hex/api/events/events_provider.hpp>
 #include <hex/api/events/events_gui.hpp>
@@ -25,8 +26,11 @@
 #include <hex/ui/imgui_imhex_extensions.h>
 
 #include <toasts/toast_notification.hpp>
+#include <popups/popup_question.hpp>
 
 #include <csignal>
+#include <fonts/tabler_icons.hpp>
+#include <hex/api/content_registry/communication_interface.hpp>
 
 namespace hex::plugin::builtin {
 
@@ -45,6 +49,9 @@ namespace hex::plugin::builtin {
             hex::openWebpage("https://github.com/WerWolv/ImHex/discussions/categories/feedback");
         });
 
+        ContentRegistry::UserInterface::addTitleBarButton(ICON_TA_HELP, ImGuiCustomCol_ToolbarGray, "hex.builtin.title_bar_button.interactive_help", []{
+            TutorialManager::startHelpHover();
+        });
     }
 
     static void drawGlobalPopups() {
@@ -101,7 +108,14 @@ namespace hex::plugin::builtin {
                 if (ImGui::BeginTabItem("ImHex")) {
                     if (ImGui::BeginChild("Scrolling", ImGui::GetContentRegionAvail())) {
                         ImGui::Checkbox("Show Debug Variables", &dbg::impl::getDebugWindowState());
-
+                        if (ImGui::Button("Request a restart")) {
+                            TaskManager::doLater([] {
+                                ui::PopupQuestion::open("hex.builtin.view.settings.restart_question"_lang,
+                                    ImHexApi::System::restartImHex,
+                                    []{}
+                                );
+                            });
+                        }
                         ImGuiExt::Header("Information");
                         ImGuiExt::TextFormatted("Running Tasks: {0}", TaskManager::getRunningTaskCount());
                         ImGuiExt::TextFormatted("Running Background Tasks: {0}", TaskManager::getRunningBackgroundTaskCount());
@@ -233,6 +247,54 @@ namespace hex::plugin::builtin {
                 ImGui::PopStyleColor();
             });
         }
+
+        ContentRegistry::UserInterface::addFooterItem([] {
+            if (ContentRegistry::MCP::isEnabled()) {
+                const bool connected = ContentRegistry::MCP::isConnected();
+                if (connected) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImGuiExt::GetCustomColorU32(ImGuiCustomCol_Highlight));
+                } else {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+                }
+                ImGui::TextUnformatted(ICON_VS_MCP);
+
+                ImGui::PopStyleColor();
+
+                if (ImGui::IsItemHovered()) {
+                    if (ImGui::BeginTooltip()) {
+                        if (connected) {
+                            auto &clientInfo = ContentRegistry::MCP::impl::getMcpServerInstance()->getClientInfo();
+                            ImGuiExt::TextFormattedColored(ImGuiExt::GetCustomColorVec4(ImGuiCustomCol_Highlight), "hex.builtin.footer.mcp.connected_to"_lang, clientInfo.name);
+                            ImGui::Separator();
+                            if (ImGui::BeginTable("##connection_info", 2, ImGuiTableFlags_RowBg)) {
+                                ImGui::TableSetupColumn("##property", ImGuiTableColumnFlags_WidthStretch);
+                                ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+
+                                ImGui::TableNextRow();
+                                ImGui::TableNextColumn();
+                                ImGuiExt::TextFormatted("hex.builtin.footer.mcp.client_version"_lang);
+                                ImGui::TableNextColumn();
+                                ImGuiExt::TextFormatted("{}", clientInfo.version);
+
+                                ImGui::TableNextRow();
+                                ImGui::TableNextColumn();
+                                ImGuiExt::TextFormatted("hex.builtin.footer.mcp.protocol_version"_lang);
+                                ImGui::TableNextColumn();
+                                ImGuiExt::TextFormatted("{}", clientInfo.protocolVersion);
+
+                                ImGui::EndTable();
+                            }
+                        } else {
+                            ImGui::PushTextWrapPos(200_scaled);
+                            ImGuiExt::TextFormattedWrapped("hex.builtin.footer.mcp.not_connected"_lang);
+                            ImGui::PopTextWrapPos();
+                        }
+
+                        ImGui::EndTooltip();
+                    }
+                }
+            }
+        });
 
         if (dbg::debugModeEnabled()) {
             ContentRegistry::UserInterface::addFooterItem([] {
@@ -453,15 +515,23 @@ namespace hex::plugin::builtin {
             rightClickedProvider = nullptr;
         });
 
-        static bool alwaysShowProviderTabs = false;
-        ContentRegistry::Settings::onChange("hex.builtin.setting.interface", "hex.builtin.setting.interface.always_show_provider_tabs", [](const ContentRegistry::Settings::SettingsValue &value) {
-            alwaysShowProviderTabs = value.get<bool>(false);
-        });
+        static ContentRegistry::Settings::SettingsVariable<bool, "hex.builtin.setting.interface", "hex.builtin.setting.interface.always_show_provider_tabs"> alwaysShowProviderTabs = false;
 
         // Toolbar items
         ContentRegistry::UserInterface::addToolbarItem([] {
 
             for (const auto &menuItem : ContentRegistry::UserInterface::impl::getToolbarMenuItems()) {
+                // Remove invalid toolbar items from the toolbar
+                if (menuItem == nullptr)
+                    continue;
+                if (menuItem->unlocalizedNames.empty() || menuItem->icon.glyph.empty()) {
+                    menuItem->toolbarIndex = -1;
+                    continue;
+                }
+
+                ImGui::PushID(menuItem);
+                ON_SCOPE_EXIT { ImGui::PopID(); };
+
                 const auto &unlocalizedItemName = menuItem->unlocalizedNames.back();
                 if (unlocalizedItemName.get() == ContentRegistry::UserInterface::impl::SeparatorValue) {
                     ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
@@ -519,7 +589,6 @@ namespace hex::plugin::builtin {
                             flags |= ImGuiTabItemFlags_UnsavedDocument;
                         if (i64(i) == selectedProviderIndex && providerJustChanged) {
                             flags |= ImGuiTabItemFlags_SetSelected;
-                            providerJustChanged = false;
                         }
 
                         static size_t lastSelectedProvider = 0;
@@ -530,7 +599,7 @@ namespace hex::plugin::builtin {
                             ImGui::EndTabItem();
                         }
 
-                        if (isSelected && lastSelectedProvider != i) {
+                        if (isSelected && lastSelectedProvider != i && !providerJustChanged) {
                             ImHexApi::Provider::setCurrentProvider(i);
                             lastSelectedProvider = i;
                         }
@@ -550,19 +619,21 @@ namespace hex::plugin::builtin {
                         }
                     }
                     ImGui::EndTabBar();
+
+                    providerJustChanged = false;
                 }
             }
             ImGui::EndDisabled();
         });
 
         EventImHexStartupFinished::subscribe([] {
-            ContentRegistry::UserInterface::addMenuItemToToolbar("hex.builtin.view.hex_editor.menu.edit.undo", ImGuiCustomCol_ToolbarBlue);
-            ContentRegistry::UserInterface::addMenuItemToToolbar("hex.builtin.view.hex_editor.menu.edit.redo", ImGuiCustomCol_ToolbarBlue);
-            ContentRegistry::UserInterface::addMenuItemToToolbar("hex.builtin.menu.file.create_file", ImGuiCustomCol_ToolbarGray);
-            ContentRegistry::UserInterface::addMenuItemToToolbar("hex.builtin.menu.file.open_file", ImGuiCustomCol_ToolbarBrown);
-            ContentRegistry::UserInterface::addMenuItemToToolbar("hex.builtin.view.hex_editor.menu.file.save", ImGuiCustomCol_ToolbarBlue);
-            ContentRegistry::UserInterface::addMenuItemToToolbar("hex.builtin.view.hex_editor.menu.file.save_as", ImGuiCustomCol_ToolbarBlue);
-            ContentRegistry::UserInterface::addMenuItemToToolbar("hex.builtin.menu.edit.bookmark.create", ImGuiCustomCol_ToolbarGreen);
+            ContentRegistry::UserInterface::addMenuItemToToolbar({ "hex.builtin.menu.edit", "hex.builtin.view.hex_editor.menu.edit.undo" }, ImGuiCustomCol_ToolbarBlue);
+            ContentRegistry::UserInterface::addMenuItemToToolbar({ "hex.builtin.menu.edit", "hex.builtin.view.hex_editor.menu.edit.redo" }, ImGuiCustomCol_ToolbarBlue);
+            ContentRegistry::UserInterface::addMenuItemToToolbar({ "hex.builtin.menu.file", "hex.builtin.menu.file.create_file" }, ImGuiCustomCol_ToolbarGray);
+            ContentRegistry::UserInterface::addMenuItemToToolbar({ "hex.builtin.menu.file", "hex.builtin.menu.file.open_file" }, ImGuiCustomCol_ToolbarBrown);
+            ContentRegistry::UserInterface::addMenuItemToToolbar({ "hex.builtin.menu.file", "hex.builtin.view.hex_editor.menu.file.save" }, ImGuiCustomCol_ToolbarBlue);
+            ContentRegistry::UserInterface::addMenuItemToToolbar({ "hex.builtin.menu.file", "hex.builtin.view.hex_editor.menu.file.save_as" }, ImGuiCustomCol_ToolbarBlue);
+            ContentRegistry::UserInterface::addMenuItemToToolbar({ "hex.builtin.menu.edit", "hex.builtin.menu.edit.bookmark.create" }, ImGuiCustomCol_ToolbarGreen);
         });
     }
 

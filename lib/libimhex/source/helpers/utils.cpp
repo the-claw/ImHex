@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cwchar>
 #include <hex/helpers/utils.hpp>
 
@@ -29,10 +30,12 @@
 #elif defined(OS_LINUX)
     #include <unistd.h>
     #include <dlfcn.h>
+    #include <spawn.h>
     #include <hex/helpers/utils_linux.hpp>
 #elif defined(OS_MACOS)
     #include <unistd.h>
     #include <dlfcn.h>
+    #include <spawn.h>
     #include <hex/helpers/utils_macos.hpp>
     #include <CoreFoundation/CoreFoundation.h>
 #elif defined(OS_WEB)
@@ -98,7 +101,7 @@ namespace hex {
         string = wolv::util::replaceStrings(string, ",", "");
 
         // Check for non-hex characters
-        bool isValidHexString = std::find_if(string.begin(), string.end(), [](char c) {
+        bool isValidHexString = std::ranges::find_if(string, [](char c) {
             return !std::isxdigit(c) && !std::isspace(c);
         }) == string.end();
 
@@ -309,6 +312,86 @@ namespace hex {
         return ::system(command.c_str());
     }
 
+    std::optional<std::string> executeCommandWithOutput(const std::string &command) {
+        std::array<char, 256> buffer = {};
+        std::string result;
+
+        #if defined(OS_WINDOWS)
+            FILE* pipe = _popen(command.c_str(), "r");
+        #else
+            FILE* pipe = popen(command.c_str(), "r");
+        #endif
+
+        if (!pipe) {
+            hex::log::error("Failed to open pipe for command: {}", command);
+            return std::nullopt;
+        }
+
+        try {
+            while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
+                result += buffer.data();
+            }
+        } catch (const std::exception &e) {
+            hex::log::error("Exception while reading command output: {}", e.what());
+
+            #if defined(OS_WINDOWS)
+                _pclose(pipe);
+            #else
+                pclose(pipe);
+            #endif
+
+            return std::nullopt;
+        }
+
+        #if defined(OS_WINDOWS)
+            int exitCode = _pclose(pipe);
+        #else
+            int exitCode = pclose(pipe);
+        #endif
+
+        if (exitCode != 0) {
+            hex::log::debug("Command exited with code {}: {}", exitCode, command);
+        }
+
+        return result;
+    }
+
+    void executeCommandDetach(const std::string &command) {
+        #if defined(OS_WINDOWS)
+            STARTUPINFOA si = { };
+            PROCESS_INFORMATION pi = { };
+            si.cb = sizeof(si);
+
+            DWORD flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+            std::string cmdCopy = command;
+
+            BOOL result = ::CreateProcessA(
+                nullptr,
+                cmdCopy.data(),
+                nullptr,
+                nullptr,
+                false,
+                flags,
+                nullptr,
+                nullptr,
+                &si,
+                &pi
+            );
+
+            if (result) {
+                ::CloseHandle(pi.hProcess);
+                ::CloseHandle(pi.hThread);
+            }
+        #elif defined(OS_MACOS) || defined(OS_LINUX)
+            pid_t pid;
+            const char* argv[] = { "sh", "-c", command.c_str(), nullptr };
+
+            ::posix_spawnp(&pid, "sh", nullptr, nullptr, const_cast<char* const*>(argv), nullptr);
+        #elif defined(OS_WEB)
+            std::ignore = command;
+        #endif
+    }
+
     void openWebpage(std::string url) {
         if (!url.contains("://"))
             url = "https://" + url;
@@ -463,7 +546,7 @@ namespace hex {
             if (ch <= 0x7F) {
                 unicode = ch;
                 unicodeSize = 0;
-            } else if (ch <= 0xBF) {
+            } else if (ch <= 0xBF) { //NOLINT(bugprone-branch-clone)
                 return { };
             } else if (ch <= 0xDF) {
                 unicode = ch&0x1F;
@@ -524,7 +607,7 @@ namespace hex {
             index += 1;
 
             if (wch < 0xD800 || wch > 0xDFFF) {
-                unicode = static_cast<u32>(wch);
+                unicode = static_cast<u32>(wch); // NOLINT(cert-str34-c)
             } else if (wch >= 0xD800 && wch <= 0xDBFF) {
                 if (index == utf16.size())
                     return "";
@@ -601,13 +684,13 @@ namespace hex {
             return value;
     }
 
-    [[nodiscard]] std::string limitStringLength(const std::string &string, size_t maxLength) {
+    [[nodiscard]] std::string limitStringLength(const std::string &string, size_t maxLength, bool fromBothEnds) {
         // If the string is shorter than the max length, return it as is
         if (string.size() < maxLength)
             return string;
 
         // If the string is longer than the max length, find the last space before the max length
-        auto it = string.begin() + maxLength / 2;
+        auto it = string.begin() + (fromBothEnds ? maxLength / 2 : maxLength);
         while (it != string.begin() && !std::isspace(*it)) --it;
 
         // If there's no space before the max length, just cut the string
@@ -623,6 +706,9 @@ namespace hex {
             return string;
 
         auto result = std::string(string.begin(), it) + "…";
+
+        if (!fromBothEnds)
+            return result;
 
         // If the string is longer than the max length, find the last space before the max length
         it = string.end() - 1 - maxLength / 2;
@@ -782,7 +868,7 @@ namespace hex {
         input.imbue(std::locale(std::setlocale(LC_ALL, nullptr)));
 
         tm time = {};
-        input >> std::get_time(&time, format.data());
+        input >> std::get_time(&time, std::string(format).data());
         if (input.fail()) {
             return std::nullopt;
         }
@@ -821,10 +907,10 @@ namespace hex {
 
                 if (lang.has_value() && !lang->empty() && *lang != "C" && *lang != "C.UTF-8") {
                     auto parts = wolv::util::splitString(*lang, ".");
-                    if (parts.size() > 0)
+                    if (!parts.empty())
                         return parts[0];
                     else
-                        return *lang;
+                        return lang;
                 }
 
                 return std::nullopt;
@@ -902,6 +988,12 @@ namespace hex {
             nid.dwInfoFlags = NIIF_INFO;
 
             Shell_NotifyIcon(NIM_ADD, &nid);
+
+            Sleep(100);
+
+            Shell_NotifyIcon(NIM_DELETE, &nid);
+            CloseWindow(hwnd);
+            DestroyWindow(hwnd);
         #elif defined(OS_MACOS)
             toastMessageMacos(title.c_str(), message.c_str());
         #elif defined(OS_LINUX)
@@ -910,17 +1002,21 @@ namespace hex {
             }
         #elif defined(OS_WEB)
             EM_ASM({
-                const t = UTF8ToString($0);
-                const m = UTF8ToString($1);
+                try {
+                    const t = UTF8ToString($0);
+                    const m = UTF8ToString($1);
 
-                if (Notification.permission === "granted") {
-                    new Notification(t, { body: m });
-                } else if (Notification.permission !== "denied") {
-                    Notification.requestPermission().then(function(p) {
-                        if (p === "granted") {
-                            new Notification(t, { body: m });
-                        }
-                    });
+                    if (Notification.permission === "granted") {
+                        new Notification(t, { body: m });
+                    } else if (Notification.permission !== "denied") {
+                        Notification.requestPermission().then(function(p) {
+                            if (p === "granted") {
+                                new Notification(t, { body: m });
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error(e);
                 }
             }, title.c_str(), message.c_str());
         #endif

@@ -61,16 +61,23 @@ namespace hex::plugin::builtin {
                 }
                 ImGuiExt::EndSubWindow();
 
-                ImGui::BeginDisabled(currTutorial != tutorials.end());
-                if (ImGuiExt::DimmedButton("hex.builtin.view.tutorials.start"_lang, ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
-                    TutorialManager::startTutorial(m_selectedTutorial->getUnlocalizedName());
-                    this->getWindowOpenState() = false;
+                if (currTutorial == tutorials.end()) {
+                    if (ImGuiExt::DimmedButton("hex.builtin.view.tutorials.start"_lang, ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+                        TutorialManager::startTutorial(m_selectedTutorial->getUnlocalizedName());
+                        this->getWindowOpenState() = false;
+                    }
+                } else {
+                    if (ImGuiExt::DimmedButton("hex.builtin.view.tutorials.stop"_lang, ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+                        TutorialManager::stopCurrentTutorial();
+                    }
                 }
-                ImGui::EndDisabled();
             }
 
             ImGui::EndTable();
         }
     }
 
+    void ViewTutorials::drawHelpText() {
+        ImGuiExt::TextFormattedWrapped("This view contains all available tutorials to help you get started with ImHex. Select a tutorial from the list and click the 'Start Tutorial' button to begin.");
+    }
 }

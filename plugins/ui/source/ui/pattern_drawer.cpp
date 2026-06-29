@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <ui/pattern_drawer.hpp>
 
 #include <pl/core/lexer.hpp>
@@ -32,6 +33,8 @@
 #include <imgui.h>
 #include <hex/ui/imgui_imhex_extensions.h>
 #include <fonts/vscode_icons.hpp>
+#include <hex/api/tutorial_manager.hpp>
+#include <pl/core/ast/ast_node_mathematical_expression.hpp>
 
 #include <wolv/io/file.hpp>
 
@@ -197,6 +200,61 @@ namespace hex::ui {
 
     }
 
+    std::optional<PatternDrawer::Filter> PatternDrawer::parseComparison(const Filter &currFilter, std::string filterString) {
+        auto result = currFilter;
+
+        pl::core::Lexer lexer;
+
+        filterString = wolv::util::trim(filterString);
+        if (filterString.empty())
+            return std::nullopt; //NOLINT: optimise for empty string
+        else if (filterString.starts_with("===")) {
+            result.operation = std::strong_ordering::equal;
+            result.inverted = false;
+            result.typeMatch = true;
+            filterString = filterString.substr(3);
+        } else if (filterString.starts_with("==")) {
+            result.operation = std::strong_ordering::equal;
+            result.inverted = false;
+            filterString = filterString.substr(2);
+        } else if (filterString.starts_with("!=")) {
+            result.operation = std::strong_ordering::equal;
+            result.inverted = true;
+            filterString = filterString.substr(2);
+        } else if (filterString.starts_with(">=")) {
+            result.operation = std::strong_ordering::less;
+            result.inverted = true;
+            filterString = filterString.substr(2);
+        } else if (filterString.starts_with("<=")) {
+            result.operation = std::strong_ordering::greater;
+            result.inverted = true;
+            filterString = filterString.substr(2);
+        } else if (filterString.starts_with(">")) {
+            result.operation = std::strong_ordering::greater;
+            result.inverted = false;
+            filterString = filterString.substr(1);
+        } else if (filterString.starts_with("<")) {
+            result.operation = std::strong_ordering::less;
+            result.inverted = false;
+            filterString = filterString.substr(1);
+        } else {
+            return std::nullopt;
+        }
+
+        pl::api::Source source(filterString);
+        auto tokens = lexer.lex(&source);
+
+        if (!tokens.isOk() || tokens.unwrap().size() != 2)
+            return std::nullopt;
+
+        auto literal = std::get_if<pl::core::Token::Literal>(&tokens.unwrap().front().value);
+        if (literal == nullptr)
+            return std::nullopt;
+        result.value = *literal;
+
+        return result;
+    }
+
     std::optional<PatternDrawer::Filter> PatternDrawer::parseRValueFilter(const std::string &filter) {
         Filter result;
 
@@ -208,30 +266,30 @@ namespace hex::ui {
         for (size_t i = 0; i < filter.size(); i += 1) {
             char c = filter[i];
 
-            if (i < filter.size() - 1 && c == '=' && filter[i + 1] == '=') {
-                pl::core::Lexer lexer;
-
-                pl::api::Source source(filter.substr(i + 2));
-                auto tokens = lexer.lex(&source);
-
-                if (!tokens.isOk() || tokens.unwrap().size() != 2)
+            if (c == '.') {
+                if (result.path.back().empty())
                     return std::nullopt;
 
-                auto literal = std::get_if<pl::core::Token::Literal>(&tokens.unwrap().front().value);
-                if (literal == nullptr)
-                    return std::nullopt;
-                result.value = *literal;
-
-                break;
-            } else if (c == '.') {
                 result.path.emplace_back();
+            } else if (c == '*') {
+                if (!result.path.back().empty())
+                    return std::nullopt;
+
+                result.path.back() = "*";
             } else if (c == '[') {
                 result.path.emplace_back();
                 result.path.back() += c;
+            } else if (c == ']') {
+                result.path.back() += c;
             } else if (c == ' ') {
                 // Skip whitespace
-            } else {
+            } else if (std::isalnum(c) || c == '_') {
+                if (result.path.back() == "*")
+                    return std::nullopt;
+
                 result.path.back() += c;
+            } else {
+                return parseComparison(result, filter.substr(i));
             }
         }
 
@@ -241,7 +299,10 @@ namespace hex::ui {
     void PatternDrawer::updateFilter() {
         m_filteredPatterns.clear();
 
-        if (m_filter.path.empty()) {
+        if (!m_filter.has_value())
+            return;
+
+        if (m_filter->path.empty()) {
             m_filteredPatterns = m_sortedPatterns;
             return;
         }
@@ -251,13 +312,22 @@ namespace hex::ui {
             if (m_filteredPatterns.size() > m_maxFilterDisplayItems)
                 break;
 
-            traversePatternTree(*pattern, treePath, [this, &treePath](auto &pattern) {
+            traversePatternTree(pattern, treePath, [this, &treePath](auto &pattern) {
                 if (m_filteredPatterns.size() > m_maxFilterDisplayItems)
                     return;
 
-                if (matchesFilter(m_filter.path, treePath, false)) {
-                    if (!m_filter.value.has_value() || pattern.getValue() == m_filter.value)
-                        m_filteredPatterns.push_back(&pattern);
+                if (matchesFilter(m_filter->path, treePath, false)) {
+                    if (!m_filter->value.has_value()) {
+                        m_filteredPatterns.push_back(pattern);
+                    } else {
+                        auto patternValue = pattern->getValue();
+                        auto operation = patternValue <=> *m_filter->value;
+                        bool isOperationOk = operation == m_filter->operation;
+                        if ((!m_filter->inverted && isOperationOk) || (m_filter->inverted && !isOperationOk)) {
+                            if (!m_filter->typeMatch || (m_filter->value->index() == patternValue.index()))
+                                m_filteredPatterns.push_back(pattern);
+                        }
+                    }
                 }
             });
         }
@@ -323,7 +393,7 @@ namespace hex::ui {
         ImGui::PopStyleVar();
     }
 
-    bool PatternDrawer::drawNameColumn(const pl::ptrn::Pattern &pattern, bool leaf) {
+    bool PatternDrawer::drawNameColumn(pl::ptrn::Pattern &pattern, bool leaf) {
         bool open = createTreeNode(pattern, leaf);
         ImGui::SameLine(0, 0);
         makeSelectable(pattern);
@@ -410,7 +480,7 @@ namespace hex::ui {
             pattern = pattern->getParent();
         }
 
-        std::reverse(result.begin(), result.end());
+        std::ranges::reverse(result);
 
         return result;
     }
@@ -480,7 +550,7 @@ namespace hex::ui {
         });
     }
 
-    void PatternDrawer::makeSelectable(const pl::ptrn::Pattern &pattern) {
+    void PatternDrawer::makeSelectable(pl::ptrn::Pattern &pattern) {
         ImGui::PushID(static_cast<int>(pattern.getOffset()));
         ImGui::PushID(pattern.getVariableName().c_str());
 
@@ -502,13 +572,34 @@ namespace hex::ui {
             }
         }
 
+        if (ImGui::BeginPopupContextItem(nullptr)) {
+            if (ImGui::MenuItemEx("hex.ui.pattern_drawer.context.copy_name"_lang, ICON_VS_COPY, nullptr, false, true))
+                ImGui::SetClipboardText(pattern.getDisplayName().c_str());
+            if (ImGui::MenuItem("hex.ui.pattern_drawer.context.copy_address"_lang, nullptr, false, true))
+                ImGui::SetClipboardText(fmt::format("0x{:02X}", pattern.getOffset()).c_str());
+            if (ImGui::MenuItem("hex.ui.pattern_drawer.context.copy_value"_lang, nullptr, false, true))
+                ImGui::SetClipboardText(pattern.toString().c_str());
+            if (ImGui::MenuItem("hex.ui.pattern_drawer.context.copy_comment"_lang, nullptr, false, !pattern.getComment().empty()))
+                ImGui::SetClipboardText(pattern.getComment().c_str());
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItemEx("hex.ui.pattern_drawer.context.edit_value"_lang, ICON_VS_EDIT)) {
+                m_editingPattern = &pattern;
+                m_editingPatternOffset = pattern.getOffset();
+                AchievementManager::unlockAchievement("hex.builtin.achievement.patterns", "hex.builtin.achievement.patterns.modify_data.name");
+            }
+
+            ImGui::EndPopup();
+        }
+
         ImGui::SameLine(0, 0);
 
         ImGui::PopID();
         ImGui::PopID();
     }
 
-    void PatternDrawer::createDefaultEntry(const pl::ptrn::Pattern &pattern) {
+    void PatternDrawer::createDefaultEntry(pl::ptrn::Pattern &pattern) {
         // Draw Name column
         drawNameColumn(pattern, true);
 
@@ -608,7 +699,7 @@ namespace hex::ui {
         }
 
         int id = 1;
-        pattern.forEachEntry(0, pattern.getEntryCount(), [&] (u64, auto *field) {
+        pattern.forEachEntrySorted(0, pattern.getEntryCount(), [&] (u64, const auto &field) {
             ImGui::PushID(id);
             this->draw(*field);
             ImGui::PopID();
@@ -804,7 +895,7 @@ namespace hex::ui {
         }
 
         int id = 1;
-        pattern.forEachEntry(0, pattern.getEntryCount(), [&](u64, auto *member){
+        pattern.forEachEntrySorted(0, pattern.getEntryCount(), [&](u64, const auto &member){
             ImGui::PushID(id);
             this->draw(*member);
             ImGui::PopID();
@@ -849,7 +940,7 @@ namespace hex::ui {
         }
 
         int id = 1;
-        pattern.forEachEntry(0, pattern.getEntryCount(), [&](u64, auto *member) {
+        pattern.forEachEntrySorted(0, pattern.getEntryCount(), [&](u64, const auto &member) {
             ImGui::PushID(id);
             this->draw(*member);
             ImGui::PopID();
@@ -1051,7 +1142,7 @@ namespace hex::ui {
             }
 
             int id = 1;
-            iterable.forEachEntry(i, endIndex, [&](u64, auto *entry){
+            iterable.forEachEntrySorted(i, endIndex, [&](u64, const auto &entry){
                 ImGui::PushID(id);
                 this->draw(*entry);
                 ImGui::PopID();
@@ -1100,7 +1191,7 @@ namespace hex::ui {
         return sortSpecs->Specs->SortDirection == ImGuiSortDirection_Ascending ? result == std::strong_ordering::less : result == std::strong_ordering::greater;
     }
 
-    bool PatternDrawer::beginPatternTable(const std::vector<std::shared_ptr<pl::ptrn::Pattern>> &patterns, std::vector<pl::ptrn::Pattern*> &sortedPatterns, float height) const {
+    bool PatternDrawer::beginPatternTable(const std::vector<std::shared_ptr<pl::ptrn::Pattern>> &patterns, std::vector<std::shared_ptr<pl::ptrn::Pattern>> &sortedPatterns, float height) const {
         if (!ImGui::BeginTable("##Patterntable", 9, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, height))) {
             return false;
         }
@@ -1108,13 +1199,13 @@ namespace hex::ui {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("hex.ui.pattern_drawer.favorites"_lang, ImGuiTableColumnFlags_NoHeaderLabel | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize | ImGuiTableColumnFlags_NoReorder | ImGuiTableColumnFlags_IndentDisable | (m_favorites.empty() ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_NoHide), ImGui::GetTextLineHeight(), ImGui::GetID("favorite"));
         ImGui::TableSetupColumn("hex.ui.pattern_drawer.var_name"_lang,  ImGuiTableColumnFlags_PreferSortAscending | ImGuiTableColumnFlags_NoHide | ImGuiTableColumnFlags_IndentEnable, 0, ImGui::GetID("name"));
-        ImGui::TableSetupColumn("hex.ui.pattern_drawer.color"_lang,     ImGuiTableColumnFlags_PreferSortAscending, 0, ImGui::GetID("color"));
-        ImGui::TableSetupColumn("hex.ui.pattern_drawer.start"_lang,     ImGuiTableColumnFlags_PreferSortAscending | ImGuiTableColumnFlags_DefaultSort, 0, ImGui::GetID("start"));
-        ImGui::TableSetupColumn("hex.ui.pattern_drawer.end"_lang,       ImGuiTableColumnFlags_PreferSortAscending | ImGuiTableColumnFlags_DefaultSort, 0, ImGui::GetID("end"));
-        ImGui::TableSetupColumn("hex.ui.pattern_drawer.size"_lang,      ImGuiTableColumnFlags_PreferSortAscending, 0, ImGui::GetID("size"));
-        ImGui::TableSetupColumn("hex.ui.pattern_drawer.type"_lang,      ImGuiTableColumnFlags_PreferSortAscending, 0, ImGui::GetID("type"));
-        ImGui::TableSetupColumn("hex.ui.pattern_drawer.value"_lang,     ImGuiTableColumnFlags_PreferSortAscending, 0, ImGui::GetID("value"));
-        ImGui::TableSetupColumn("hex.ui.pattern_drawer.comment"_lang,   ImGuiTableColumnFlags_PreferSortAscending | ImGuiTableColumnFlags_DefaultHide, 0, ImGui::GetID("comment"));
+        ImGui::TableSetupColumn("hex.ui.pattern_drawer.color"_lang,     ImGuiTableColumnFlags_NoSort, 0, ImGui::GetID("color"));
+        ImGui::TableSetupColumn("hex.ui.pattern_drawer.start"_lang,     ImGuiTableColumnFlags_None | ImGuiTableColumnFlags_DefaultSort, 0, ImGui::GetID("start"));
+        ImGui::TableSetupColumn("hex.ui.pattern_drawer.end"_lang,       ImGuiTableColumnFlags_None, 0, ImGui::GetID("end"));
+        ImGui::TableSetupColumn("hex.ui.pattern_drawer.size"_lang,      ImGuiTableColumnFlags_None, 0, ImGui::GetID("size"));
+        ImGui::TableSetupColumn("hex.ui.pattern_drawer.type"_lang,      ImGuiTableColumnFlags_None, 0, ImGui::GetID("type"));
+        ImGui::TableSetupColumn("hex.ui.pattern_drawer.value"_lang,     ImGuiTableColumnFlags_None, 0, ImGui::GetID("value"));
+        ImGui::TableSetupColumn("hex.ui.pattern_drawer.comment"_lang,   ImGuiTableColumnFlags_DefaultHide, 0, ImGui::GetID("comment"));
 
         auto sortSpecs = ImGui::TableGetSortSpecs();
 
@@ -1128,13 +1219,10 @@ namespace hex::ui {
         }
 
         if (!m_favoritesUpdateTask.isRunning()) {
-            sortedPatterns.clear();
-            std::transform(patterns.begin(), patterns.end(), std::back_inserter(sortedPatterns), [](const std::shared_ptr<pl::ptrn::Pattern> &pattern) {
-                return pattern.get();
-            });
+            sortedPatterns = patterns;
 
-            std::stable_sort(sortedPatterns.begin(), sortedPatterns.end(), [this, &sortSpecs](const pl::ptrn::Pattern *left, const pl::ptrn::Pattern *right) -> bool {
-                return this->sortPatterns(sortSpecs, left, right);
+            std::ranges::stable_sort(sortedPatterns, [this, &sortSpecs](const std::shared_ptr<pl::ptrn::Pattern> &left, const std::shared_ptr<pl::ptrn::Pattern> &right) -> bool {
+                return this->sortPatterns(sortSpecs, left.get(), right.get());
             });
 
             for (auto &pattern : sortedPatterns) {
@@ -1149,14 +1237,18 @@ namespace hex::ui {
         return true;
     }
 
-    void PatternDrawer::traversePatternTree(pl::ptrn::Pattern &pattern, std::vector<std::string> &patternPath, const std::function<void(pl::ptrn::Pattern&)> &callback) {
-        patternPath.push_back(pattern.getVariableName());
+    void PatternDrawer::traversePatternTree(const std::shared_ptr<pl::ptrn::Pattern> &pattern, std::vector<std::string> &patternPath, const std::function<void(const std::shared_ptr<pl::ptrn::Pattern>&)> &callback) {
+        patternPath.push_back(pattern->getVariableName());
         ON_SCOPE_EXIT { patternPath.pop_back(); };
 
         callback(pattern);
-        if (auto iterable = dynamic_cast<pl::ptrn::IIterable*>(&pattern); iterable != nullptr) {
-            iterable->forEachEntry(0, iterable->getEntryCount(), [&](u64, pl::ptrn::Pattern *entry) {
-                traversePatternTree(*entry, patternPath, callback);
+        if (auto iterable = dynamic_cast<pl::ptrn::IIterable*>(pattern.get()); iterable != nullptr) {
+            // Don't index individual characters of strings
+            if (dynamic_cast<pl::ptrn::PatternString*>(pattern.get()) || dynamic_cast<pl::ptrn::PatternWideString*>(pattern.get()))
+                return;
+
+            iterable->forEachEntrySorted(0, iterable->getEntryCount(), [&](u64, const auto &entry) {
+                traversePatternTree(entry, patternPath, callback);
             });
         }
     }
@@ -1199,10 +1291,48 @@ namespace hex::ui {
 
         auto &style = ImGui::GetStyle();
         ImGui::PushItemWidth(-(style.ItemSpacing.x * 2 + style.WindowPadding.x * 2 + ImGui::GetTextLineHeightWithSpacing() * 5 + 15_scaled));
-        if (ImGuiExt::InputTextIcon("##Search", ICON_VS_FILTER, m_filterText)) {
-            m_filter = parseRValueFilter(m_filterText).value_or(Filter{ });
-            updateFilter();
+
+        const bool filterError = !m_filterText.empty() && !m_filter.has_value();
+
+        if (filterError) {
+            ImGui::PushStyleColor(ImGuiCol_Border, ImGuiExt::GetCustomColorU32(ImGuiCustomCol_LoggerError));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1_scaled);
         }
+
+        if (ImGuiExt::InputTextIcon("##Search", ICON_VS_FILTER, m_filterText)) {
+            auto newFilter = parseRValueFilter(m_filterText);
+
+            if (m_filterText.empty()) {
+                m_filter.reset();
+                updateFilter();
+            } else if (!newFilter.has_value()) {
+                m_filter.reset();
+                m_filteredPatterns.clear();
+            } else {
+                m_filter = newFilter;
+                updateFilter();
+            }
+        }
+
+        TutorialManager::setLastItemInteractiveHelpPopup([] {
+            ImGuiExt::TextFormattedWrapped("{}",
+                "Allows filtering of the pattern tree using the following syntax:\n\n"
+                "- variable_name: Shows all patterns with this name\n"
+                "- container.var: Shows all patterns named var that are inside a pattern called container\n"
+                "- a.*.b: Searches all children of pattern a for a pattern named b\n"
+                "- a[10].b: Shows patterns named b inside the 10th array entry of a pattern named a\n"
+                "- x > 10: Shows all patterns named x that have a value greater than 10\n"
+                "- a.b == 100: Shows all patterns named b with a value of 100 that are inside a pattern named a\n"
+                "- a == \"Hello\": Shows all patterns named a whose value is the string \"Hello\"\n\n"
+                "If nothing was found, the tree will be empty. If there was a parsing error, the filter text field will be highlighted in red."
+            );
+        });
+
+        if (filterError) {
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+        }
+
         ImGui::PopItemWidth();
 
         ImGui::SameLine();
@@ -1235,7 +1365,7 @@ namespace hex::ui {
             for (const auto &formatter : m_formatters) {
                 const auto name = [&]{
                     auto formatterName = formatter->getName();
-                    std::transform(formatterName.begin(), formatterName.end(), formatterName.begin(), [](char c){ return char(std::toupper(c)); });
+                    std::ranges::transform(formatterName, formatterName.begin(), [](char c){ return char(std::toupper(c)); });
 
                     return formatterName;
                 }();
@@ -1322,7 +1452,7 @@ namespace hex::ui {
 
                 m_showFavoriteStars = true;
 
-                for (auto &pattern : m_filter.path.empty() ? m_sortedPatterns : m_filteredPatterns) {
+                for (auto &pattern : m_filterText.empty() ? m_sortedPatterns : m_filteredPatterns) {
                     ImGui::PushID(id);
                     this->draw(*pattern);
                     ImGui::PopID();
@@ -1372,14 +1502,14 @@ namespace hex::ui {
                             continue;
 
                         patternPath.clear();
-                        traversePatternTree(*pattern, patternPath, [&, this](const pl::ptrn::Pattern &currPattern) {
+                        traversePatternTree(pattern, patternPath, [&, this](const std::shared_ptr<pl::ptrn::Pattern> &currPattern) {
                             for (auto &[path, favoritePattern] : m_favorites) {
                                 if (updatedFavorites == m_favorites.size())
                                     task.interrupt();
                                 task.update();
 
                                 if (matchesFilter(patternPath, path, true)) {
-                                    favoritePattern = currPattern.clone();
+                                    favoritePattern = currPattern->clone();
                                     updatedFavorites += 1;
 
                                     break;

@@ -17,6 +17,7 @@
 #include <set>
 #include <string>
 #include <algorithm>
+#include <numbers>
 
 #include <hex/api/imhex_api/system.hpp>
 
@@ -285,13 +286,11 @@ namespace ImGuiExt {
     }
 
     void Texture::reset() {
-        #if !defined(OS_WEB)
-            if (glDeleteTextures == nullptr)
-                return;
-        #endif
-
         if (m_textureId != 0) {
-            glDeleteTextures(1, reinterpret_cast<GLuint*>(&m_textureId));
+            #if !defined(OS_WEB)
+                if (glDeleteTextures != nullptr)
+                    glDeleteTextures(1, reinterpret_cast<GLuint*>(&m_textureId));
+            #endif
             m_textureId = 0;
         }
     }
@@ -435,7 +434,7 @@ namespace ImGuiExt {
         return pressed;
     }
 
-    bool DescriptionButton(const char *label, const char *description, const ImVec2 &size_arg, ImGuiButtonFlags flags) {
+    bool DescriptionButton(const char *label, const char *description, const char *icon, const ImVec2 &size_arg, ImGuiButtonFlags flags) {
         ImGuiWindow *window = GetCurrentWindow();
         if (window->SkipItems)
             return false;
@@ -465,15 +464,23 @@ namespace ImGuiExt {
         // Render
         const ImU32 col = GetCustomColorU32((held && hovered) ? ImGuiCustomCol_DescButtonActive : hovered ? ImGuiCustomCol_DescButtonHovered
                                                                                                           : ImGuiCustomCol_DescButton);
+        float icon_padding = style.FramePadding.x * 2;
+        float label_padding = icon_padding + style.FramePadding.x * 5;
+        float description_padding = label_padding + style.FramePadding.x * 2;
+
         RenderNavCursor(bb, id);
         RenderFrame(bb.Min, bb.Max, col, true, style.FrameRounding);
+        PushFont(GImGui->Font, GImGui->FontSizeBase * 1.25F);
+        const ImVec2 icon_size  = CalcTextSize(icon, nullptr, true);
+        RenderTextClipped(bb.Min + ImVec2(icon_padding, (size.y - icon_size.y) / 2), bb.Max - style.FramePadding, icon, nullptr, nullptr);
+        PopFont();
         PushStyleColor(ImGuiCol_Text, GetColorU32(ImGuiCol_ButtonActive));
-        RenderTextClipped(bb.Min + style.FramePadding * 2, bb.Max - style.FramePadding, label, nullptr, nullptr);
+        RenderTextClipped(bb.Min + style.FramePadding * 2 + ImVec2(label_padding, 0), bb.Max - style.FramePadding, label, nullptr, nullptr);
         PopStyleColor();
         PushStyleColor(ImGuiCol_Text, GetColorU32(ImGuiCol_Text));
         auto clipBb = bb;
         clipBb.Max.x -= style.FramePadding.x;
-        RenderTextClipped(bb.Min + style.FramePadding * 2 + ImVec2(style.FramePadding.x * 2, label_size.y), bb.Max - style.FramePadding, description, nullptr, &text_size, style.ButtonTextAlign, &clipBb);
+        RenderTextClipped(bb.Min + style.FramePadding * 2 + ImVec2(description_padding, label_size.y), bb.Max - style.FramePadding, description, nullptr, &text_size, style.ButtonTextAlign, &clipBb);
         PopStyleColor();
 
         PopStyleVar(2);
@@ -486,7 +493,7 @@ namespace ImGuiExt {
         return pressed;
     }
 
-    bool DescriptionButtonProgress(const char *label, const char *description, float fraction, const ImVec2 &size_arg, ImGuiButtonFlags flags) {
+    bool DescriptionButtonProgress(const char *label, const char *description, const char *icon, float fraction, const ImVec2 &size_arg, ImGuiButtonFlags flags) {
         ImGuiWindow *window = GetCurrentWindow();
         if (window->SkipItems)
             return false;
@@ -516,15 +523,23 @@ namespace ImGuiExt {
         // Render
         const ImU32 col = GetCustomColorU32((held && hovered) ? ImGuiCustomCol_DescButtonActive : hovered ? ImGuiCustomCol_DescButtonHovered
                                                                                                           : ImGuiCustomCol_DescButton);
+        float icon_padding = style.FramePadding.x * 2;
+        float label_padding = icon_padding + style.FramePadding.x * 5;
+        float description_padding = label_padding + style.FramePadding.x * 2;
+
         RenderNavCursor(bb, id);
-        RenderFrame(bb.Min, bb.Max, col, false, style.FrameRounding);
+        RenderFrame(bb.Min, bb.Max, col, true, style.FrameRounding);
+        PushFont(GImGui->Font, GImGui->FontSizeBase * 1.25F);
+        const ImVec2 icon_size  = CalcTextSize(icon, nullptr, true);
+        RenderTextClipped(bb.Min + ImVec2(icon_padding, (size.y - icon_size.y) / 2), bb.Max - style.FramePadding, icon, nullptr, nullptr);
+        PopFont();
         PushStyleColor(ImGuiCol_Text, GetColorU32(ImGuiCol_ButtonActive));
-        RenderTextClipped(bb.Min + style.FramePadding * 2, bb.Max - style.FramePadding, label, nullptr, nullptr);
+        RenderTextClipped(bb.Min + style.FramePadding * 2 + ImVec2(label_padding, 0), bb.Max - style.FramePadding, label, nullptr, nullptr);
         PopStyleColor();
         PushStyleColor(ImGuiCol_Text, GetColorU32(ImGuiCol_Text));
         auto clipBb = bb;
         clipBb.Max.x -= style.FramePadding.x;
-        RenderTextClipped(bb.Min + style.FramePadding * 2 + ImVec2(style.FramePadding.x * 2, label_size.y), bb.Max - style.FramePadding, description, nullptr, &text_size, style.ButtonTextAlign, &clipBb);
+        RenderTextClipped(bb.Min + style.FramePadding * 2 + ImVec2(description_padding, label_size.y), bb.Max - style.FramePadding, description, nullptr, &text_size, style.ButtonTextAlign, &clipBb);
         PopStyleColor();
 
         RenderFrame(ImVec2(bb.Min.x, bb.Max.y - 5 * hex::ImHexApi::System::getGlobalScale()), bb.Max, GetColorU32(ImGuiCol_ScrollbarBg), false, style.FrameRounding);
@@ -1034,9 +1049,9 @@ namespace ImGuiExt {
 
         if (no_progress) {
             auto time = (fmod(ImGui::GetTime() * 2, 1.8) - 0.4);
-            RenderRectFilledRangeH(window->DrawList, bb, GetColorU32(ImGuiCol_PlotHistogram), ImSaturate(time), ImSaturate(time + 0.2), style.FrameRounding);
+            RenderRectFilledInRangeH(window->DrawList, bb, GetColorU32(ImGuiCol_PlotHistogram), ImSaturate(time), ImSaturate(time + 0.2), style.FrameRounding);
         } else {
-            RenderRectFilledRangeH(window->DrawList, bb, GetColorU32(ImGuiCol_PlotHistogram), 0.0F, fraction, style.FrameRounding);
+            RenderRectFilledInRangeH(window->DrawList, bb, GetColorU32(ImGuiCol_PlotHistogram), 0.0F, fraction, style.FrameRounding);
         }
     }
 
@@ -1047,6 +1062,9 @@ namespace ImGuiExt {
         auto textEnd = text + strlen(text);
         for (auto wrapPos = text; wrapPos != textEnd;) {
             wrapPos = ImGui::GetFont()->CalcWordWrapPosition(GetFontSize(), wrapPos, textEnd, availableSpace.x * 0.8F);
+            if (text == wrapPos)
+                break;
+
             drawString += std::string(text, wrapPos) + "\n";
             text = wrapPos;
         }
@@ -1199,6 +1217,21 @@ namespace ImGuiExt {
         return res;
     }
 
+    bool DimmedArrowButton(const char *id, ImGuiDir dir, ImVec2 size) {
+        PushStyleColor(ImGuiCol_ButtonHovered, GetCustomColorU32(ImGuiCustomCol_DescButtonHovered));
+        PushStyleColor(ImGuiCol_Button, GetCustomColorU32(ImGuiCustomCol_DescButton));
+        PushStyleColor(ImGuiCol_Text, GetColorU32(ImGuiCol_ButtonActive));
+        PushStyleColor(ImGuiCol_ButtonActive, GetCustomColorU32(ImGuiCustomCol_DescButtonActive));
+        PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5 * hex::ImHexApi::System::getGlobalScale());
+
+        bool res = ArrowButtonEx(id, dir, size);
+
+        PopStyleColor(4);
+        PopStyleVar(1);
+
+        return res;
+    }
+
     bool DimmedButtonToggle(const char *icon, bool *v, ImVec2 size, ImVec2 iconOffset) {
         bool pushed = false;
         bool toggled = false;
@@ -1336,9 +1369,9 @@ namespace ImGuiExt {
     bool VSliderAngle(const char* label, const ImVec2& size, float* v_rad, float v_degrees_min, float v_degrees_max, const char* format, ImGuiSliderFlags flags) {
         if (format == nullptr)
             format = "%.0f deg";
-        float v_deg = (*v_rad) * 360.0F / (2 * IM_PI);
+        float v_deg = (*v_rad) * 360.0F / (2 * std::numbers::pi_v<float>);
         bool value_changed = ImGui::VSliderFloat(label, size, &v_deg, v_degrees_min, v_degrees_max, format, flags);
-        *v_rad = v_deg * (2 * IM_PI) / 360.0F;
+        *v_rad = v_deg * (2 * std::numbers::pi_v<float>) / 360.0F;
         return value_changed;
     }
 
@@ -1482,9 +1515,9 @@ namespace ImGuiExt {
 
     bool IsDarkBackground(const ImColor& bgColor) {
         // Extract RGB components in 0–255 range
-        int r = static_cast<int>(bgColor.Value.x * 255.0f);
-        int g = static_cast<int>(bgColor.Value.y * 255.0f);
-        int b = static_cast<int>(bgColor.Value.z * 255.0f);
+        int r = static_cast<int>(bgColor.Value.x * 255.0F);
+        int g = static_cast<int>(bgColor.Value.y * 255.0F);
+        int b = static_cast<int>(bgColor.Value.z * 255.0F);
 
         // Compute brightness using perceived luminance
         int brightness = (r * 299 + g * 587 + b * 114) / 1000;

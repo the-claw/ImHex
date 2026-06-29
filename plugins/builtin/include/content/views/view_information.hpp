@@ -7,12 +7,14 @@
 
 namespace hex::plugin::builtin {
 
-    class ViewInformation : public View::Window {
+    class ViewInformation : public View::Scrolling {
     public:
         explicit ViewInformation();
         ~ViewInformation() override = default;
 
         void drawContent() override;
+
+        void drawHelpText() override;
 
     private:
         void analyze();
